@@ -35,16 +35,17 @@ func updateInterval(c Config) (time.Duration, error) {
 	if s == "" {
 		return 7 * 24 * time.Hour, nil
 	}
+	invalid := fmt.Errorf("Update interval %q isn't valid. Use a number of days from 1d to 365d, such as 14d.", s)
 	if strings.HasSuffix(s, "d") {
 		n, err := strconv.Atoi(strings.TrimSuffix(s, "d"))
 		if err != nil || n < 1 || n > 365 {
-			return 0, errors.New("update interval must be between 1d and 365d")
+			return 0, invalid
 		}
 		return time.Duration(n) * 24 * time.Hour, nil
 	}
 	d, err := time.ParseDuration(s)
 	if err != nil || d < 24*time.Hour || d > 365*24*time.Hour {
-		return 0, errors.New("update interval must be between 24h and 8760h")
+		return 0, invalid
 	}
 	return d, nil
 }
@@ -117,16 +118,32 @@ func saveUpdateState(c Config, target string, state updateState) error {
 	return atomicWrite(statePath(c, target), b)
 }
 
+var errPackageManaged = notice{"This copy of grok-commit was installed with a package manager. Use that package manager to update it.", nil}
+
+func sourceBuild(version string) error {
+	return notice{fmt.Sprintf("This copy of grok-commit (version %s) isn't an official stable release, so it can't update itself. Update it the way you installed it, for example: go install github.com/ddhjy/grok-commit/cmd/grok-commit@latest", version), nil}
+}
+
+func notUpdatable(target, version string) error {
+	if _, err := versionParts(version); err != nil {
+		return sourceBuild(version)
+	}
+	if packageManaged(target) {
+		return errPackageManaged
+	}
+	return notice{"Updates aren't set up for this copy of grok-commit. To set them up, run: grok-commit update --enable", nil}
+}
+
 func registerInstallation(c Config, target, version string) error {
 	if _, err := versionParts(version); err != nil {
-		return errors.New("automatic updates require an official release build")
+		return sourceBuild(version)
 	}
 	resolved, err := filepath.EvalSymlinks(target)
 	if err != nil {
 		return err
 	}
 	if packageManaged(resolved) {
-		return errors.New("use your package manager to update this installation")
+		return errPackageManaged
 	}
 	b, _ := json.MarshalIndent(installation{resolved, true}, "", "  ")
 	if err := atomicWrite(filepath.Join(c.ConfigDir, "installation.json"), b); err != nil {
@@ -215,7 +232,7 @@ func updateLock(c Config, target string) (func(), error) {
 	}
 	unlock, err := lockWorker(filepath.Join(dir, "update.lock"))
 	if err != nil {
-		return nil, errors.New("another update is already running")
+		return nil, errors.New("Another grok-commit update is already running. Wait a minute, then try again.")
 	}
 	return unlock, nil
 }
@@ -351,7 +368,7 @@ func performUpdate(ctx context.Context, c Config, target, current string, checkO
 			state.LastError = err.Error()
 		}
 		if saveErr := saveUpdateState(c, target, state); saveErr != nil {
-			err = errors.Join(err, fmt.Errorf("save update status: %w", saveErr))
+			err = errors.Join(err, fmt.Errorf("Couldn't save the update status: %w", saveErr))
 		}
 	}()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
@@ -360,18 +377,20 @@ func performUpdate(ctx context.Context, c Config, target, current string, checkO
 	if err != nil {
 		return "", err
 	}
+	latest, installed := strings.TrimPrefix(r.Tag, "v"), strings.TrimPrefix(current, "v")
 	if !newer(r.Tag, current) {
-		return "Already up to date (" + current + ").", nil
+		return "✓ You have the latest version (" + installed + ").", nil
 	}
 	if automatic && state.SkipVersion == r.Tag {
-		return "Skipped previously rolled-back version.", nil
+		return "Skipped " + latest + " because you rolled it back.", nil
 	}
 	if checkOnly {
-		return "Available: " + r.Tag + " (installed: " + current + "). Run grok-commit update to install.", nil
+		return fmt.Sprintf("Version %s is available (you have %s). To install it, run: grok-commit update", latest, installed), nil
 	}
+	changed := errors.New("grok-commit was replaced while the update was running (perhaps by another install), so nothing was changed. Run grok-commit update again.")
 	// Respect changes to the installation while the background check was running.
-	if err = d.verifyBinary(ctx, target, strings.TrimPrefix(current, "v")); err != nil {
-		return "", errors.New("installation changed while checking; try again")
+	if err = d.verifyBinary(ctx, target, installed); err != nil {
+		return "", changed
 	}
 	candidate, err := d.download(ctx, r, filepath.Dir(target))
 	if err != nil {
@@ -381,22 +400,24 @@ func performUpdate(ctx context.Context, c Config, target, current string, checkO
 	if automatic {
 		latestConfig, loadErr := LoadConfig()
 		if loadErr != nil || !updatesEnabled(latestConfig) {
-			return "Automatic updates disabled.", nil
+			return "Automatic updates were turned off, so the download wasn't installed.", nil
 		}
 	}
-	if err = d.verifyBinary(ctx, target, strings.TrimPrefix(current, "v")); err != nil {
-		return "", errors.New("installation changed while downloading; try again")
+	if err = d.verifyBinary(ctx, target, installed); err != nil {
+		return "", changed
 	}
 	previousHash, err := installCandidate(ctx, candidate, target)
 	if err != nil {
-		return "", fmt.Errorf("cannot complete executable replacement: %w", err)
+		return "", fmt.Errorf("Couldn't install the update in %s (%v). Check that you can write to that folder, then try again.", filepath.Dir(target), err)
 	}
-	state.Previous = strings.TrimPrefix(current, "v")
+	state.Previous = installed
 	state.PreviousHash = previousHash
-	state.Installed = strings.TrimPrefix(r.Tag, "v")
+	state.Installed = latest
 	state.SkipVersion = ""
-	return "Updated to " + r.Tag + ". Previous version retained for update --rollback.", nil
+	return fmt.Sprintf("✓ Updated to %s. To go back to %s, run: grok-commit update --rollback", latest, installed), nil
 }
+
+var errNoPreviousVersion = notice{"There's no earlier version to go back to yet. grok-commit keeps the previous version after each update.", nil}
 
 func rollbackUpdate(ctx context.Context, c Config, target, current string, d distribution) error {
 	state, err := readUpdateState(c, target)
@@ -404,15 +425,15 @@ func rollbackUpdate(ctx context.Context, c Config, target, current string, d dis
 		return err
 	}
 	if state.Previous == "" || state.PreviousHash == "" {
-		return errors.New("no previous version is available")
+		return errNoPreviousVersion
 	}
 	previous := previousPath(target)
 	hash, err := fileHash(previous)
 	if err != nil || hash != state.PreviousHash {
-		return errors.New("previous version checksum mismatch")
+		return errors.New("The saved previous version is missing or has been modified, so it wasn't restored.")
 	}
 	if err = d.verifyBinary(ctx, previous, state.Previous); err != nil {
-		return err
+		return errors.New("The saved previous version failed its version check, so it wasn't restored.")
 	}
 	f, err := os.CreateTemp(filepath.Dir(target), ".grok-commit-rollback-*")
 	if err != nil {
@@ -443,38 +464,36 @@ func rollbackUpdate(ctx context.Context, c Config, target, current string, d dis
 
 func updateCommand(ctx context.Context, c Config, args []string, out io.Writer, version string) error {
 	fs := flag.NewFlagSet("update", flag.ContinueOnError)
-	fs.SetOutput(out)
-	check := fs.Bool("check", false, "check without installing")
-	status := fs.Bool("status", false, "show update status")
-	enable := fs.Bool("enable", false, "enable quiet background updates")
-	disable := fs.Bool("disable", false, "disable background updates")
-	rollback := fs.Bool("rollback", false, "restore previous version")
-	interval := fs.String("interval", "", "check interval, e.g. 7d or 14d")
+	fs.SetOutput(io.Discard)
+	check := fs.Bool("check", false, "")
+	status := fs.Bool("status", false, "")
+	enable := fs.Bool("enable", false, "")
+	disable := fs.Bool("disable", false, "")
+	rollback := fs.Bool("rollback", false, "")
+	interval := fs.String("interval", "", "")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return flagError(err, "grok-commit update", fs, args)
 	}
 	if fs.NArg() != 0 {
-		return errors.New("unexpected update argument")
+		return fmt.Errorf("Unknown argument %q. Run grok-commit update --help to see the options.", fs.Arg(0))
 	}
-	actions := 0
-	for _, v := range []bool{*check, *status, *enable, *disable, *rollback, *interval != ""} {
-		if v {
-			actions++
-		}
-	}
-	if actions > 1 {
-		return errors.New("choose one update action")
+	var given []string
+	fs.Visit(func(f *flag.Flag) { given = append(given, "--"+f.Name) })
+	if len(given) > 1 {
+		return fmt.Errorf("Use one option at a time (you gave %s).", strings.Join(given, ", "))
 	}
 	if *disable {
 		if err := setConfigValue(c, "auto_update", false); err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "Automatic updates disabled.")
+		fmt.Fprintln(out, "✓ Automatic updates are off. You can still update anytime with grok-commit update.")
+		updateOverride(out, false)
 		return nil
 	}
 	if *interval != "" {
 		c.UpdateInterval = *interval
-		if _, err := updateInterval(c); err != nil {
+		every, err := updateInterval(c)
+		if err != nil {
 			return err
 		}
 		if err := setConfigValue(c, "update_interval", *interval); err != nil {
@@ -490,18 +509,23 @@ func updateCommand(ctx context.Context, c Config, args []string, out io.Writer, 
 			if e != nil {
 				return e
 			}
-			d, _ := updateInterval(c)
-			state.NextCheck = time.Now().Add(d)
+			state.NextCheck = time.Now().Add(every)
 			if e = saveUpdateState(c, installed.Path, state); e != nil {
 				return e
 			}
 		}
-		fmt.Fprintln(out, "Update interval:", *interval)
+		fmt.Fprintf(out, "✓ grok-commit will check for updates %s.\n", frequency(every))
+		if !updatesEnabled(c) {
+			fmt.Fprintln(out, "Automatic updates are off, so this applies once you turn them on: grok-commit update --enable")
+		}
 		return nil
 	}
 	target, err := executablePath()
 	if err != nil {
 		return err
+	}
+	if *status {
+		return updateStatus(c, target, version, out)
 	}
 	if *enable {
 		if err := registerInstallation(c, target, version); err != nil {
@@ -510,40 +534,38 @@ func updateCommand(ctx context.Context, c Config, args []string, out io.Writer, 
 		if err := setConfigValue(c, "auto_update", true); err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "Quiet background updates enabled (default interval: 7 days).")
+		every, err := updateInterval(c)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "✓ Automatic updates are on. grok-commit checks %s, in the background after you use it.\n", frequency(every))
+		updateOverride(out, true)
 		return nil
 	}
 	installed, err := readInstallation(c)
 	if err != nil || installed.Path != target {
-		return errors.New("run grok-commit setup to enable self-updates, or update through your package manager")
+		return notUpdatable(target, version)
 	}
-	if *status {
+	var previous string
+	if *rollback {
 		state, err := readUpdateState(c, target)
 		if err != nil {
 			return err
 		}
-		interval, err := updateInterval(c)
-		if err != nil {
-			return err
+		if state.Previous == "" || state.PreviousHash == "" {
+			return errNoPreviousVersion
 		}
-		fmt.Fprintf(out, "Installed: %s\nAutomatic updates: %t\nCheck interval: %g days\nNext check: %s\n", version, updatesEnabled(c), interval.Hours()/24, state.NextCheck.Local().Format(time.RFC3339))
-		if state.Previous != "" {
-			fmt.Fprintln(out, "Previous version:", state.Previous)
-		}
-		if state.LastError != "" {
-			fmt.Fprintln(out, "Last check:", state.LastError)
-		}
-		return nil
+		previous = state.Previous
 	}
 	if runtime.GOOS == "windows" && !*check {
-		action := "manual"
+		action, doing := "manual", "Updating"
 		if *rollback {
-			action = "rollback"
+			action, doing = "rollback", "Going back to version "+previous
 		}
 		if err := startUpdateWorker(c, target, action); err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "Updating in the background. Use grok-commit update --status to check the result.")
+		fmt.Fprintf(out, "%s in the background; this takes a few seconds.\nTo see the result, run: grok-commit update --status\n", doing)
 		return nil
 	}
 	unlock, err := updateLock(c, target)
@@ -555,7 +577,7 @@ func updateCommand(ctx context.Context, c Config, args []string, out io.Writer, 
 		if err := rollbackUpdate(ctx, c, target, version, newDistribution()); err != nil {
 			return err
 		}
-		fmt.Fprintln(out, "Restored the previous version. Automatic updates will skip the version you rolled back.")
+		fmt.Fprintf(out, "✓ Went back to version %s. Automatic updates will skip %s, but grok-commit update can still install it.\n", previous, version)
 		return nil
 	}
 	fmt.Fprintln(out, "Checking for updates...")
@@ -564,5 +586,81 @@ func updateCommand(ctx context.Context, c Config, args []string, out io.Writer, 
 		return err
 	}
 	fmt.Fprintln(out, message)
+	return nil
+}
+
+// updatesSummary is setup's line about automatic updates. When
+// GROK_COMMIT_AUTO_UPDATE decides, update --enable and --disable can't change
+// the outcome, so it names the variable instead of suggesting them.
+func updatesSummary(c Config, interval time.Duration) string {
+	on := updatesEnabled(c)
+	value, env := os.LookupEnv("GROK_COMMIT_AUTO_UPDATE")
+	schedule := fmt.Sprintf("grok-commit checks %s, in the background after you use it, and stays quiet if a check fails.", frequency(interval))
+	switch {
+	case env && on:
+		return fmt.Sprintf("Automatic updates: on (set by GROK_COMMIT_AUTO_UPDATE=%s in this shell). %s", value, schedule)
+	case env:
+		return fmt.Sprintf("Automatic updates: off (set by GROK_COMMIT_AUTO_UPDATE=%s in this shell).", value)
+	case on:
+		return "Automatic updates: on. " + schedule + "\nTo turn them off: grok-commit update --disable"
+	}
+	return "Automatic updates: off. To turn them on: grok-commit update --enable"
+}
+
+// updateOverride warns when GROK_COMMIT_AUTO_UPDATE outranks the setting the
+// user just saved.
+func updateOverride(out io.Writer, want bool) {
+	if value, ok := os.LookupEnv("GROK_COMMIT_AUTO_UPDATE"); ok && updatesEnabled(Config{}) != want {
+		fmt.Fprintf(out, "Note: GROK_COMMIT_AUTO_UPDATE=%s in this shell overrides this setting until you remove it from your environment.\n", value)
+	}
+}
+
+func updateStatus(c Config, target, version string, out io.Writer) error {
+	fmt.Fprintln(out, "Version:", version)
+	installed, err := readInstallation(c)
+	if err != nil || installed.Path != target {
+		switch _, versionErr := versionParts(version); {
+		case versionErr != nil:
+			fmt.Fprintln(out, "Automatic updates: not available for builds from source")
+		case packageManaged(target):
+			fmt.Fprintln(out, "Automatic updates: handled by your package manager")
+		default:
+			fmt.Fprintln(out, "Automatic updates: not set up (to turn them on, run grok-commit update --enable)")
+		}
+		return nil
+	}
+	state, err := readUpdateState(c, target)
+	if err != nil {
+		return err
+	}
+	interval, err := updateInterval(c)
+	if err != nil {
+		return err
+	}
+	on := updatesEnabled(c)
+	switch value, env := os.LookupEnv("GROK_COMMIT_AUTO_UPDATE"); {
+	case env && on:
+		fmt.Fprintf(out, "Automatic updates: on (set by GROK_COMMIT_AUTO_UPDATE=%s in this shell)\n", value)
+	case env:
+		fmt.Fprintf(out, "Automatic updates: off (set by GROK_COMMIT_AUTO_UPDATE=%s in this shell)\n", value)
+	case on:
+		fmt.Fprintln(out, "Automatic updates: on")
+	default:
+		fmt.Fprintln(out, "Automatic updates: off (to turn them on, run grok-commit update --enable)")
+	}
+	fmt.Fprintln(out, "Check interval:", days(interval))
+	if on {
+		next := "the next time you use grok-commit"
+		if time.Now().Before(state.NextCheck) {
+			next = "the first time you use grok-commit after " + state.NextCheck.Local().Format("2006-01-02 15:04")
+		}
+		fmt.Fprintln(out, "Next check:", next)
+	}
+	if state.Previous != "" {
+		fmt.Fprintf(out, "Previous version: %s (to go back, run grok-commit update --rollback)\n", state.Previous)
+	}
+	if state.LastError != "" {
+		fmt.Fprintln(out, "Last attempt failed:", state.LastError)
+	}
 	return nil
 }

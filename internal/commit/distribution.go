@@ -28,6 +28,11 @@ const latestReleaseURL = "https://api.github.com/repos/" + releaseRepository + "
 
 var stableVersion = regexp.MustCompile(`^v?(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$`)
 
+var (
+	errBadPackage        = errors.New("The release package doesn't contain a valid grok-commit program, so nothing was installed.")
+	errUntrustedRedirect = errors.New("GitHub sent the download to an unexpected server, so nothing was downloaded.")
+)
+
 func versionParts(s string) ([3]uint64, error) {
 	var parts [3]uint64
 	m := stableVersion.FindStringSubmatch(s)
@@ -82,13 +87,13 @@ type distribution struct {
 func newDistribution() distribution {
 	return distribution{client: &http.Client{Timeout: 90 * time.Second, CheckRedirect: func(r *http.Request, via []*http.Request) error {
 		if len(via) > 5 || r.URL.Scheme != "https" {
-			return errors.New("untrusted update redirect")
+			return errUntrustedRedirect
 		}
 		switch r.URL.Host {
 		case "github.com", "api.github.com", "release-assets.githubusercontent.com", "objects.githubusercontent.com":
 			return nil
 		}
-		return errors.New("untrusted update redirect")
+		return errUntrustedRedirect
 	}}, latestURL: latestReleaseURL, goos: runtime.GOOS, arch: runtime.GOARCH, validateAsset: trustedAsset, verifyBinary: verifyVersion}
 }
 
@@ -106,11 +111,20 @@ func (d distribution) get(ctx context.Context, raw string) (*http.Response, erro
 	req.Header.Set("Accept", "application/vnd.github+json")
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return nil, errors.New("cannot reach the release server")
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return nil, ctx.Err()
+		}
+		if errors.Is(err, errUntrustedRedirect) {
+			return nil, errUntrustedRedirect
+		}
+		return nil, errors.New("Couldn't reach GitHub. Check your internet connection, then try again.")
 	}
 	if resp.StatusCode != 200 {
 		resp.Body.Close()
-		return nil, fmt.Errorf("release server returned HTTP %d", resp.StatusCode)
+		if resp.StatusCode == 403 || resp.StatusCode == 429 {
+			return nil, fmt.Errorf("GitHub is limiting requests right now (HTTP %d). Try again in an hour.", resp.StatusCode)
+		}
+		return nil, fmt.Errorf("GitHub returned an error (HTTP %d). Try again later.", resp.StatusCode)
 	}
 	return resp, nil
 }
@@ -123,10 +137,10 @@ func (d distribution) latest(ctx context.Context) (release, error) {
 	}
 	defer resp.Body.Close()
 	if err = json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
-		return r, errors.New("invalid release metadata")
+		return r, errors.New("Couldn't read the release information from GitHub. Try again later.")
 	}
 	if _, err = versionParts(r.Tag); err != nil || r.Draft || r.Prerelease {
-		return r, errors.New("release is not a stable version")
+		return r, errors.New("The latest release on GitHub isn't a stable version, so it was skipped.")
 	}
 	return r, nil
 }
@@ -143,13 +157,13 @@ func (d distribution) download(ctx context.Context, r release, dir string) (stri
 	for _, a := range r.Assets {
 		if a.Name == name || a.Name == "checksums.txt" {
 			if assets[a.Name] != "" || !d.validateAsset(a.URL, r.Tag, a.Name) {
-				return "", errors.New("invalid release asset URL")
+				return "", errors.New("The release's download links don't point to the official repository, so nothing was installed.")
 			}
 			assets[a.Name] = a.URL
 		}
 	}
 	if len(assets) != 2 {
-		return "", errors.New("release has no verified package for this platform")
+		return "", fmt.Errorf("Release %s doesn't include a verified package for %s/%s, so nothing was installed.", strings.TrimPrefix(r.Tag, "v"), d.goos, d.arch)
 	}
 	resp, err := d.get(ctx, assets["checksums.txt"])
 	if err != nil {
@@ -158,7 +172,7 @@ func (d distribution) download(ctx context.Context, r release, dir string) (stri
 	manifest, err := io.ReadAll(io.LimitReader(resp.Body, 65537))
 	resp.Body.Close()
 	if err != nil || len(manifest) > 65536 {
-		return "", errors.New("invalid checksum manifest")
+		return "", errors.New("The release's checksum file is damaged, so nothing was installed.")
 	}
 	expected, err := manifestHash(string(manifest), name)
 	if err != nil {
@@ -178,10 +192,10 @@ func (d distribution) download(ctx context.Context, r release, dir string) (stri
 	n, err := io.Copy(io.MultiWriter(archive, hash), io.LimitReader(resp.Body, (64<<20)+1))
 	resp.Body.Close()
 	if err != nil || n > 64<<20 {
-		return "", errors.New("release download failed or exceeded size limit")
+		return "", errors.New("The download didn't finish, or was larger than expected, so nothing was installed. Try again.")
 	}
 	if hex.EncodeToString(hash.Sum(nil)) != expected {
-		return "", errors.New("release checksum mismatch; current installation is unchanged")
+		return "", errors.New("The download didn't match its published checksum, so it wasn't installed. Your current version is unchanged.")
 	}
 	if _, err = archive.Seek(0, io.SeekStart); err != nil {
 		return "", err
@@ -235,12 +249,12 @@ func manifestHash(manifest, name string) (string, error) {
 		}
 		b, err := hex.DecodeString(fields[0])
 		if err != nil || len(b) != 32 || found != "" {
-			return "", errors.New("invalid checksum manifest")
+			return "", errors.New("The release's checksum file is damaged, so nothing was installed.")
 		}
 		found = strings.ToLower(fields[0])
 	}
 	if found == "" {
-		return "", errors.New("archive checksum missing")
+		return "", errors.New("The release's checksum file doesn't list this package, so nothing was installed.")
 	}
 	return found, nil
 }
@@ -265,7 +279,7 @@ func extractTar(archive io.Reader, name string, dst io.Writer) error {
 			continue
 		}
 		if found || h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > 64<<20 {
-			return errors.New("invalid executable in archive")
+			return errBadPackage
 		}
 		found = true
 		if _, err = io.Copy(dst, reader); err != nil {
@@ -273,7 +287,7 @@ func extractTar(archive io.Reader, name string, dst io.Writer) error {
 		}
 	}
 	if !found {
-		return errors.New("executable missing from archive")
+		return errBadPackage
 	}
 	return nil
 }
@@ -289,7 +303,7 @@ func extractZIP(archive io.ReaderAt, size int64, name string, dst io.Writer) err
 			continue
 		}
 		if found || !f.Mode().IsRegular() || f.UncompressedSize64 == 0 || f.UncompressedSize64 > 64<<20 {
-			return errors.New("invalid executable in archive")
+			return errBadPackage
 		}
 		found = true
 		in, err := f.Open()
@@ -302,11 +316,11 @@ func extractZIP(archive io.ReaderAt, size int64, name string, dst io.Writer) err
 			return err
 		}
 		if n > 64<<20 {
-			return errors.New("executable exceeds size limit")
+			return errBadPackage
 		}
 	}
 	if !found {
-		return errors.New("executable missing from archive")
+		return errBadPackage
 	}
 	return nil
 }
@@ -316,7 +330,7 @@ func verifyVersion(ctx context.Context, path, version string) error {
 	defer cancel()
 	b, err := exec.CommandContext(ctx, path, "version").Output()
 	if err != nil || strings.TrimSpace(string(b)) != "grok-commit "+version {
-		return errors.New("downloaded executable failed its version check")
+		return errors.New("The downloaded program didn't pass its version check, so it wasn't installed.")
 	}
 	return nil
 }
@@ -406,7 +420,7 @@ func installCandidate(ctx context.Context, candidate, target string) (string, er
 		recovery, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
 		if restoreErr := replaceExecutable(recovery, tmp, target); restoreErr != nil {
-			return "", fmt.Errorf("backup failed (%v); restoring executable failed: %w", err, restoreErr)
+			return "", fmt.Errorf("the backup failed (%v) and so did restoring the previous program (%w); reinstall grok-commit with the installer", err, restoreErr)
 		}
 		return "", err
 	}

@@ -175,7 +175,7 @@ func TestUpdateCheckAndOfflineFailure(t *testing.T) {
 	writeTest(t, target, "version=0.1.0")
 	d := releaseServer(t, "version=0.2.0", false)
 	message, err := performUpdate(context.Background(), c, target, "0.1.0", true, false, d)
-	if err != nil || !strings.Contains(message, "Available: v0.2.0") {
+	if err != nil || !strings.Contains(message, "Version 0.2.0 is available (you have 0.1.0)") {
 		t.Fatalf("%s: %v", message, err)
 	}
 	if err = d.verifyBinary(context.Background(), target, "0.1.0"); err != nil {
@@ -303,6 +303,27 @@ func TestArchiveRejectsMissingDuplicateAndSymlink(t *testing.T) {
 	z.Close()
 	if err := extractZIP(bytes.NewReader(b.Bytes()), int64(b.Len()), "grok-commit.exe", io.Discard); err == nil {
 		t.Fatal("duplicate ZIP accepted")
+	}
+}
+
+func TestUpdatesSummaryNamesTheEnvironmentOverride(t *testing.T) {
+	c := updateConfig(t)
+	week := 7 * 24 * time.Hour
+	if got := updatesSummary(c, week); !strings.HasPrefix(got, "Automatic updates: on (set by GROK_COMMIT_AUTO_UPDATE=1 in this shell).") || strings.Contains(got, "--disable") {
+		t.Fatal(got)
+	}
+	t.Setenv("GROK_COMMIT_AUTO_UPDATE", "0")
+	if got := updatesSummary(c, week); got != "Automatic updates: off (set by GROK_COMMIT_AUTO_UPDATE=0 in this shell)." {
+		t.Fatal(got)
+	}
+	os.Unsetenv("GROK_COMMIT_AUTO_UPDATE")
+	if got := updatesSummary(c, week); !strings.Contains(got, "checks at most once a week") || !strings.HasSuffix(got, "To turn them off: grok-commit update --disable") {
+		t.Fatal(got)
+	}
+	off := false
+	c.AutoUpdate = &off
+	if got := updatesSummary(c, week); got != "Automatic updates: off. To turn them on: grok-commit update --enable" {
+		t.Fatal(got)
 	}
 }
 

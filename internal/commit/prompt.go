@@ -2,6 +2,7 @@ package commit
 
 import (
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"unicode"
@@ -41,16 +42,19 @@ func ValidateSubject(s string) (string, error) {
 			s = strings.TrimSpace(lines[1])
 		}
 	}
-	if utf8.RuneCountInString(s) > 72 {
-		return "", errors.New("Grok subject exceeds the 72-character limit")
+	if s == "" {
+		return "", errors.New("Grok returned an empty subject. Try again.")
 	}
-	if !utf8.ValidString(s) || !subjectPattern.MatchString(s) {
-		return "", errors.New("Grok returned an invalid commit subject")
+	if utf8.RuneCountInString(s) > 72 {
+		return "", fmt.Errorf("Grok's subject was longer than 72 characters, so it wasn't used: %s. Try again; if this keeps happening, ask for shorter subjects in .grok-commit-rules.", preview(s))
 	}
 	for _, r := range s {
 		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' {
-			return "", errors.New("Grok returned a multiline or control-character subject")
+			return "", fmt.Errorf("Grok's subject contained a line break or control character, so it wasn't used: %s. Try again.", preview(s))
 		}
+	}
+	if !utf8.ValidString(s) || !subjectPattern.MatchString(s) {
+		return "", fmt.Errorf("Grok's answer wasn't a conventional commit subject (type: summary), so it wasn't used: %s. Try again; if this keeps happening, check that .grok-commit-rules doesn't ask for a different format.", preview(s))
 	}
 	return s, nil
 }

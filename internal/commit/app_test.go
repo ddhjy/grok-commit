@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -112,11 +113,15 @@ func TestDryRunNeverChangesIndexOrHEAD(t *testing.T) {
 	index := gitTest(t, dir, "write-tree")
 	head := gitTest(t, dir, "rev-parse", "HEAD")
 	useServer(t, func(w http.ResponseWriter, r *http.Request) { sse(w, "feat: preview staged change", "stop") })
-	if _, err := runTest(t, "-ad"); err != nil {
+	out, err := runTest(t, "-ad")
+	if err != nil {
 		t.Fatal(err)
 	}
 	if gitTest(t, dir, "write-tree") != index || gitTest(t, dir, "rev-parse", "HEAD") != head {
 		t.Fatal("dry run mutated repository")
+	}
+	if !strings.Contains(out, "Nothing was committed.\nTo commit these staged changes, run: grok-commit --no-stage\n") {
+		t.Fatal(out)
 	}
 }
 
@@ -146,7 +151,7 @@ func TestChangedIndexBlocksCommit(t *testing.T) {
 		}
 		sse(w, "feat: original change", "stop")
 	})
-	if _, err := runTest(t, "-a"); err == nil || !strings.Contains(err.Error(), "staged changes changed") {
+	if _, err := runTest(t, "-a"); err == nil || !strings.Contains(err.Error(), "staged changes were modified") {
 		t.Fatalf("wrong error: %v", err)
 	}
 	if gitTest(t, dir, "rev-parse", "HEAD") != head {
@@ -167,11 +172,98 @@ func TestCommitHooksAreRespected(t *testing.T) {
 	writeTest(t, hook, "#!/bin/sh\nexit 1\n")
 	_ = os.Chmod(hook, 0700)
 	useServer(t, func(w http.ResponseWriter, r *http.Request) { sse(w, "feat: new behavior", "stop") })
-	if _, err := runTest(t, "-a"); err == nil {
+	_, err := runTest(t, "-a")
+	if err == nil {
 		t.Fatal("hook was bypassed")
+	}
+	if !strings.Contains(err.Error(), "Nothing was committed, and your changes are still staged.") || !strings.Contains(err.Error(), "add --no-verify") {
+		t.Fatal(err)
 	}
 	if _, err := runTest(t, "-a", "--no-verify"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEmptyStatesExplainWhatToDo(t *testing.T) {
+	dir := setupRepo(t)
+	if out, err := runTest(t, "-a"); err != nil || !strings.Contains(out, "✓ Nothing to commit — working tree clean.") {
+		t.Fatalf("%q %v", out, err)
+	}
+	writeTest(t, filepath.Join(dir, "new.txt"), "new\n")
+	for _, c := range []struct {
+		args []string
+		want string
+	}{
+		{nil, "Only new files changed, and new files are included only with -a.\nTo commit them, run: grok-commit -a"},
+		{[]string{"-d"}, "--dry-run doesn't stage files"},
+		{[]string{"--no-stage"}, "--no-stage only commits what's already staged"},
+	} {
+		_, err := runTest(t, c.args...)
+		var report bytes.Buffer
+		Report(&report, err)
+		if !errors.Is(err, errNothingStaged) || !strings.Contains(report.String(), c.want) || strings.HasPrefix(report.String(), "Error:") {
+			t.Errorf("%q: %q", c.args, report.String())
+		}
+	}
+	if gitTest(t, dir, "status", "--porcelain") != "?? new.txt" {
+		t.Fatal("an empty state changed the index")
+	}
+}
+
+func TestMistakesSuggestTheFix(t *testing.T) {
+	dir := setupRepo(t)
+	writeTest(t, filepath.Join(dir, "code.txt"), "changed\n")
+	useServer(t, func(w http.ResponseWriter, r *http.Request) { t.Error("a mistake reached Grok") })
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"--pussh"}, "Unknown option --pussh. Did you mean --push?"},
+		{[]string{"-m", "fix bug"}, "use git commit -m instead"},
+		{[]string{"-am", "fix bug"}, "use git commit -m instead"},
+		{[]string{"--model"}, "Option --model needs a value, for example: --model grok-4.3"},
+		{[]string{"--push=yes"}, "Option --push doesn't take a value"},
+		{[]string{"stup"}, `Unknown command "stup". Did you mean grok-commit setup?`},
+		{[]string{"code.txt"}, "stage them with git add, then run: grok-commit --no-stage"},
+		{[]string{"-d", "-p"}, "--dry-run and --push can't be used together"},
+		{[]string{"--reasoning", "max"}, `Reasoning level "max" isn't supported. Use none, low, medium, or high.`},
+		{[]string{"setup", "--auht", "api"}, "Unknown option --auht. Did you mean --auth?"},
+		{[]string{"setup", "--auth", "key"}, "--auth key isn't an option. Use --auth api (xAI API key) or --auth cli (Grok CLI sign-in)."},
+		{[]string{"update", "--enable", "--disable"}, "Use one option at a time (you gave --disable, --enable)."},
+		{[]string{"update", "--interval", "2w"}, `Update interval "2w" isn't valid. Use a number of days from 1d to 365d, such as 14d.`},
+		{[]string{"auth", "xai-secret"}, "it may now be in your shell history"},
+	}
+	if runtime.GOOS != "windows" {
+		cases = append(cases, struct {
+			args []string
+			want string
+		}{[]string{"daemon", "stats"}, `Unknown action "stats". Did you mean grok-commit daemon status?`})
+	}
+	for _, c := range cases {
+		_, err := runTest(t, c.args...)
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%q: %v", c.args, err)
+		}
+		if strings.Contains(fmt.Sprint(err), "xai-secret") {
+			t.Errorf("%q: echoed the key", c.args)
+		}
+	}
+	if gitTest(t, dir, "status", "--porcelain") != "M code.txt" {
+		t.Fatal("a mistake changed the index")
+	}
+}
+
+func TestCommandHelp(t *testing.T) {
+	setupRepo(t)
+	for _, args := range [][]string{{"setup", "--help"}, {"help", "setup"}, {"setup", "-h"}} {
+		if out, err := runTest(t, args...); err != nil || !strings.HasPrefix(out, "Usage: grok-commit setup") {
+			t.Errorf("%q: %q %v", args, out, err)
+		}
+	}
+	for _, args := range [][]string{{"--help"}, {"help"}, {"-ah"}, {"help", "nothing"}} {
+		if out, err := runTest(t, args...); err != nil || !strings.Contains(out, "Get started:") {
+			t.Errorf("%q: %q %v", args, out, err)
+		}
 	}
 }
 

@@ -5,7 +5,7 @@ A fast, standalone Git commit CLI powered by **Grok**. One native binary. No Pyt
 ```text
 $ grok-commit -a
 
-Generating (grok-4.3)... ✓
+Writing the commit subject with grok-4.3... ✓
 
 → feat: support ordered paths for shared aliases
 
@@ -30,7 +30,7 @@ irm https://raw.githubusercontent.com/ddhjy/grok-commit/main/install.ps1 | iex
 
 The installer selects your platform, checks the release's SHA-256 checksum, installs for your user without administrator privileges, configures PATH, and runs setup. On macOS/Linux, open a new terminal after installation to pick up PATH changes. Install locations: `~/.local/bin/grok-commit` or `%LocalAppData%\Programs\grok-commit\grok-commit.exe`.
 
-Setup reuses existing Grok credentials, or guides you through hidden API-key entry / signing in with an installed Grok CLI. It checks Git and the Grok connection without generating a subject or committing anything. **You need Git and a Grok account/API key once; credentials cannot be bundled with the tool.** If setup is interrupted or you're offline, the binary stays installed. Resume with:
+Setup reuses existing Grok credentials, or guides you through hidden API-key entry / signing in with an installed Grok CLI. It checks Git and the Grok connection without generating a subject or committing anything. A new key is saved only after Grok accepts it; if Grok rejects it, setup asks again. **You need Git and a Grok account/API key once; credentials cannot be bundled with the tool.** If setup is interrupted or you're offline, the binary stays installed and nothing is saved. Resume with:
 
 ```sh
 grok-commit setup
@@ -38,7 +38,7 @@ cd your-repository
 grok-commit -a
 ```
 
-Running the tool interactively without credentials also opens setup before making index changes. In scripts/CI, missing credentials produce an actionable error without prompting. Use `setup --yes` to validate existing credentials noninteractively.
+Running the tool interactively without credentials also opens setup before making index changes, then tells you which command to run again. In scripts/CI, missing credentials produce an actionable message without prompting. Use `setup --yes` to validate existing credentials noninteractively.
 
 For managed provisioning, set `GROK_COMMIT_INSTALL_DIR`, `GROK_COMMIT_VERSION=v0.2.0`, `GROK_COMMIT_NO_SETUP=1`, or `GROK_COMMIT_NO_PATH=1` before running the installer. You can inspect/download the installer first or install manually from [GitHub Releases](https://github.com/ddhjy/grok-commit/releases), then run `grok-commit setup`. Release binaries are not Developer ID/Authenticode signed.
 
@@ -102,15 +102,17 @@ grok-commit --no-cache --profile
 grok-commit --no-daemon      # Direct request, useful for scripts/CI
 ```
 
+Run `grok-commit --help` for every option, or `grok-commit <command> --help` (for example `grok-commit update --help`) for one command. A mistyped option or command gets a suggested correction, and nothing is staged or sent to Grok.
+
 Optional shell shortcut:
 
 ```sh
 alias aa='grok-commit -a'
 ```
 
-`--dry-run` never stages, commits or pushes, even with `-a`. Stage files yourself before previewing. Git hooks and signing are respected by default; use `--no-verify` only when you explicitly want to skip commit hooks. A failed push reports that the local commit already succeeded.
+`--dry-run` never stages, commits or pushes, even with `-a`. Stage files yourself before previewing; afterwards it prints the exact command that commits the same staged changes with the same options. When nothing is staged, the message says why (for example, new files are included only with `-a`) and what to run. Git hooks and signing are respected by default; if a hook rejects the commit, your changes stay staged, and `--no-verify` skips commit hooks when you explicitly want that. A failed push reports that the local commit already succeeded.
 
-Default output is concise. `--profile` prints local preparation, staging, diff, generation, commit and total timings to stderr. The generation time includes worker startup if needed; cache hits do not contact Grok.
+Default output is concise. `--profile` prints local preparation, staging, diff, generation, commit and total timings to stderr. The generation time includes starting the background service if needed; cache hits do not contact Grok.
 
 ## Model, style and rules
 
@@ -133,7 +135,7 @@ Rules are limited to 32 KiB and must resolve to a regular file inside the reposi
 
 ## Fast connections
 
-On macOS and Linux, the first command starts a private local worker. It reuses HTTP connections across commands and exits after 20 minutes idle. Use these commands to control it:
+On macOS and Linux, the first command starts a private background service. It reuses HTTP connections across commands and exits after 20 minutes idle. Use these commands to control it (`grok-commit daemon --help` explains each one):
 
 ```sh
 grok-commit daemon start     # Start and prewarm; no model generation
@@ -149,9 +151,9 @@ grok-commit daemon install
 grok-commit daemon uninstall
 ```
 
-Install the binary at its final location first. With an API key, save it using `auth --stdin` and unset `XAI_API_KEY` before installing the service. On Linux, use the on-demand worker or run `grok-commit daemon run --keepalive` under your own service manager. Windows currently uses direct requests; automatic background connection reuse is available on macOS/Linux only.
+Install the binary at its final location first. A login service can't read `XAI_API_KEY` from your shell, so with an API key, save it using `grok-commit setup --auth api` (or `auth --stdin`) and unset `XAI_API_KEY` before installing the service. On Linux, use the on-demand background service or run `grok-commit daemon run --keepalive` under your own service manager. Windows currently uses direct requests; automatic background connection reuse is available on macOS/Linux only.
 
-The worker refreshes its connection with a model-list request every 25 seconds. It never watches repositories or generates subjects in the background. Requests use a private Unix socket. From v0.2.0 onward, each release uses its own worker address; a replaced worker drains in-flight requests and exits, so new invocations use the new code. After updating the Grok CLI itself, stop/restart the worker (or reinstall the login service) to refresh its client version. Workers from v0.1.0 exit on their usual idle timeout; reinstall a v0.1.0 login service once if you enabled one.
+The background service refreshes its connection with a model-list request every 25 seconds. It never watches repositories or generates subjects in the background. Requests use a private Unix socket. From v0.2.0 onward, each release uses its own service address; a replaced service drains in-flight requests and exits, so new invocations use the new code. After updating the Grok CLI itself, stop/restart the background service (or reinstall the login service) to refresh its client version. Background services from v0.1.0 exit on their usual idle timeout; reinstall a v0.1.0 login service once if you enabled one.
 
 If generation is still pending after 700 ms, one additional Grok request starts; the first valid completed result wins. **A slow call can consume two generations.** Set `--hedge-delay 0` to disable this behavior. Cancellation stops outstanding requests, but already generated tokens may still be billed.
 
@@ -180,19 +182,19 @@ Optional `config.json` in the OS user configuration directory:
 
 Precedence: command flags → environment → config file → defaults. Environment variables: `GROK_COMMIT_MODEL`, `GROK_COMMIT_REASONING`, `GROK_COMMIT_AUTH`, `GROK_COMMIT_BASE_URL`, `GROK_COMMIT_TIMEOUT`, `GROK_COMMIT_HEDGE_DELAY`. `GROK_COMMIT_CACHE=0`, `GROK_COMMIT_DAEMON=0` and `GROK_COMMIT_PROFILE=1` control behavior. Directory overrides: `GROK_COMMIT_CONFIG_DIR`, `GROK_COMMIT_STATE_DIR`; `GROK_HOME` locates a non-default CLI login.
 
-State, cached subjects and the worker's diagnostic log live under the OS user cache directory (`grok-commit`). Prompts, diffs and keys are not written to these logs. Custom HTTPS base URLs are available in API-key mode; the CLI login can only be sent to the first-party CLI endpoint. Redirects are rejected rather than forwarding authentication.
+State, cached subjects and the background service's diagnostic log live under the OS user cache directory (`grok-commit`). Prompts, diffs and keys are not written to these logs. Custom HTTPS base URLs are available in API-key mode; the CLI login can only be sent to the first-party CLI endpoint. Redirects are rejected rather than forwarding authentication.
 
 ## Correctness and performance
 
 The model must return a successful terminal `stop` event and a valid single-line subject. Partial, truncated, refused, tool-call and malformed responses do not commit. The prompt uses a captured Git tree, and the index is checked again before committing; if it changed, the command stops. Hooks may add time or reject the commit.
 
-Measure separately: cold worker startup, warm generation with `--no-cache`, cache hits, and hooks/signing. Include the whole command's wall time and report P50/P95 over varied diffs. A network-dependent tool cannot guarantee every call finishes under two seconds.
+Measure separately: cold background-service startup, warm generation with `--no-cache`, cache hits, and hooks/signing. Include the whole command's wall time and report P50/P95 over varied diffs. A network-dependent tool cannot guarantee every call finishes under two seconds.
 
 Release validation on macOS arm64, using Grok 4.3 through an existing CLI login:
 
 | Scenario | Complete command wall time |
 | --- | --- |
-| Cold worker, no local result cache (1 sample) | 1.880 s |
+| Cold background service, no local result cache (1 sample) | 1.880 s |
 | Warm connection, no local result cache (6 samples) | median 0.925 s; max / nearest-rank P95 1.005 s |
 | Exact-input cache hit (1 sample) | 0.146 s |
 

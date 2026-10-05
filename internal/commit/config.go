@@ -50,10 +50,11 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return c, err
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "config.json"))
+	path := filepath.Join(dir, "config.json")
+	b, err := os.ReadFile(path)
 	if err == nil {
 		if err = json.Unmarshal(b, &c); err != nil {
-			return c, fmt.Errorf("read config: %w", err)
+			return c, fmt.Errorf("Couldn't read settings from %s (%v). Fix the file, or delete it to use the defaults.", path, err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return c, err
@@ -78,7 +79,7 @@ func LoadConfig() (Config, error) {
 
 func (c *Config) Resolve() error {
 	if !strings.HasPrefix(c.Model, "grok-") {
-		return errors.New("model must be a Grok model")
+		return fmt.Errorf("%q isn't a Grok model. grok-commit works only with Grok models, such as grok-4.3.", c.Model)
 	}
 	if c.Reasoning == "" {
 		c.Reasoning = "low"
@@ -89,26 +90,28 @@ func (c *Config) Resolve() error {
 	switch c.Reasoning {
 	case "none", "low", "medium", "high":
 	default:
-		return errors.New("invalid reasoning level")
+		return fmt.Errorf("Reasoning level %q isn't supported. Use none, low, medium, or high.", c.Reasoning)
 	}
 	var err error
 	c.RequestTimeout, err = time.ParseDuration(c.Timeout)
 	if err != nil || c.RequestTimeout <= 0 || c.RequestTimeout > 5*time.Minute {
-		return errors.New("timeout must be between 0 and 5m")
+		return fmt.Errorf("Timeout %q isn't valid. Use a duration above 0 and up to 5m, such as 30s or 2m.", c.Timeout)
 	}
 	c.Hedge, err = time.ParseDuration(c.HedgeDelay)
 	if err != nil || c.Hedge < 0 {
-		return errors.New("hedge_delay must be a nonnegative duration; 0 disables it")
+		return fmt.Errorf("Hedge delay %q isn't valid. Use a duration such as 700ms or 2s, or 0 to turn off backup requests.", c.HedgeDelay)
 	}
-	if c.Auth == "auto" {
-		if key, _ := c.apiKey(); key != "" {
+	auto := c.Auth == "auto"
+	if auto {
+		// A damaged key file or a custom endpoint shows the user meant API-key mode.
+		key, keyErr := c.apiKey()
+		c.Auth = "cli"
+		if key != "" || errors.Is(keyErr, errDamagedKey) || c.BaseURL != "" && strings.TrimRight(c.BaseURL, "/") != cliURL {
 			c.Auth = "api"
-		} else {
-			c.Auth = "cli"
 		}
 	}
 	if c.Auth != "api" && c.Auth != "cli" {
-		return errors.New("auth must be auto, api, or cli")
+		return fmt.Errorf("Auth mode %q isn't supported. Use auto, api (xAI API key), or cli (Grok CLI sign-in).", c.Auth)
 	}
 	if c.BaseURL == "" {
 		c.BaseURL = apiURL
@@ -119,16 +122,19 @@ func (c *Config) Resolve() error {
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	u, err := url.Parse(c.BaseURL)
 	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return errors.New("invalid API base URL")
+		return errors.New("The API address must be a full URL such as https://api.x.ai/v1, without a username, password, query string, or fragment.")
 	}
 	local := u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost" || u.Hostname() == "::1"
 	if u.Scheme != "https" && !(u.Scheme == "http" && local) {
-		return errors.New("API base URL must use HTTPS (HTTP is allowed only on localhost)")
+		return errors.New("The API address must start with https:// so your key is encrypted in transit (http:// is allowed only for localhost).")
 	}
 	if c.Auth == "cli" && c.BaseURL != cliURL {
-		return errors.New("Grok CLI credentials can only be sent to the Grok CLI endpoint")
+		return errors.New("A custom API address (--base-url) works only with an xAI API key; Grok CLI sign-in always connects to Grok directly. Remove the custom address, or connect with an API key: grok-commit setup --auth api")
 	}
 	_, err = c.credential()
+	if auto && errors.Is(err, errNoCLISignIn) {
+		return errNotConnected
+	}
 	return err
 }
 
@@ -147,16 +153,19 @@ func (c Config) apiKey() (string, error) {
 		APIKey string `json:"api_key"`
 	}
 	if err := json.Unmarshal(b, &saved); err != nil {
-		return "", errors.New("invalid credentials file")
+		return "", errDamagedKey
 	}
 	return strings.TrimSpace(saved.APIKey), nil
 }
 
 func (c Config) credential() (string, error) {
 	if c.Auth == "api" {
-		key, _ := c.apiKey()
+		key, err := c.apiKey()
+		if errors.Is(err, errDamagedKey) {
+			return "", err
+		}
 		if key == "" {
-			return "", errors.New("run grok-commit setup, or set XAI_API_KEY")
+			return "", errNotConnected
 		}
 		return key, nil
 	}
@@ -170,13 +179,13 @@ func (c Config) credential() (string, error) {
 	}
 	b, err := os.ReadFile(filepath.Join(home, "auth.json"))
 	if err != nil {
-		return "", errors.New("no Grok credentials: run grok-commit setup, or set XAI_API_KEY")
+		return "", errNoCLISignIn
 	}
 	var entries map[string]struct {
 		Key string `json:"key"`
 	}
 	if json.Unmarshal(b, &entries) != nil {
-		return "", errors.New("invalid Grok CLI authentication file")
+		return "", credentialsError("Grok CLI's sign-in file is damaged. Run grok login to sign in again, or connect with an API key: grok-commit setup --auth api")
 	}
 	var keys []string
 	for name, entry := range entries {
@@ -184,22 +193,28 @@ func (c Config) credential() (string, error) {
 			keys = append(keys, entry.Key)
 		}
 	}
-	if len(keys) != 1 {
-		return "", errors.New("Grok CLI login is missing or ambiguous; sign in again or use XAI_API_KEY")
+	switch len(keys) {
+	case 0:
+		return "", errNoCLISignIn
+	case 1:
+		return keys[0], nil
 	}
-	return keys[0], nil
+	return "", credentialsError("Grok CLI is signed in to more than one account, so grok-commit can't tell which one to use. Connect with an API key instead: grok-commit setup --auth api")
 }
 
 func cliVersion(ctx context.Context) (string, error) {
+	if _, err := exec.LookPath("grok"); err != nil {
+		return "", errNoGrokCLI
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	b, err := exec.CommandContext(ctx, "grok", "--version").Output()
 	if err != nil {
-		return "", errors.New("Grok CLI authentication requires an installed grok command")
+		return "", errors.New("Grok CLI didn't respond to grok --version. Check that it runs, or connect with an API key: grok-commit setup --auth api")
 	}
 	m := regexp.MustCompile(`\bgrok (\d+\.\d+\.\d+)`).FindSubmatch(b)
 	if len(m) != 2 {
-		return "", errors.New("cannot determine Grok CLI version")
+		return "", errors.New("Couldn't read the Grok CLI version from grok --version. Update Grok CLI, or connect with an API key: grok-commit setup --auth api")
 	}
 	return string(m[1]), nil
 }
@@ -215,7 +230,7 @@ func privateDir(path string) error {
 		return err
 	}
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return errors.New("state path must be a directory, not a symlink")
+		return fmt.Errorf("%s must be a regular folder, not a file or symbolic link. Move it out of the way, then try again.", path)
 	}
 	return os.Chmod(path, 0700)
 }

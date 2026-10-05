@@ -10,20 +10,49 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
+
+const serviceLabel = "com.grok-commit.daemon"
+
+func loginServicePath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, "Library", "LaunchAgents", serviceLabel+".plist"), nil
+}
+
+// loginServiceInstalled reports whether launchd starts the service at login
+// and restarts it whenever it stops.
+func loginServiceInstalled() bool {
+	if runtime.GOOS != "darwin" {
+		return false
+	}
+	path, err := loginServicePath()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
+}
 
 func service(ctx context.Context, c Config, remove bool) error {
 	if runtime.GOOS != "darwin" {
-		return errors.New("login service installation currently supports macOS; use daemon start on Linux")
+		return notice{"Starting at login is available only on macOS. On Linux, the background service starts automatically when you commit; to keep it running, have your service manager (such as systemd) run: grok-commit daemon run --keepalive", nil}
 	}
-	const label = "com.grok-commit.daemon"
-	home, err := os.UserHomeDir()
+	path, err := loginServicePath()
 	if err != nil {
 		return err
 	}
-	path := filepath.Join(home, "Library", "LaunchAgents", label+".plist")
+	if !remove && c.Auth == "api" {
+		// launchd does not inherit the interactive shell's API key.
+		if _, err := os.Stat(filepath.Join(c.ConfigDir, "credentials.json")); err != nil {
+			return errors.New("Services that start at login can't read XAI_API_KEY from your shell. Save the key first with grok-commit setup --auth api, then run grok-commit daemon install again.")
+		}
+	}
 	domain := fmt.Sprintf("gui/%d", os.Getuid())
-	_ = exec.CommandContext(ctx, "launchctl", "bootout", domain+"/"+label).Run()
+	_ = exec.CommandContext(ctx, "launchctl", "bootout", domain+"/"+serviceLabel).Run()
 	if err := stopDaemon(ctx, c); err != nil {
 		return err
 	}
@@ -33,14 +62,6 @@ func service(ctx context.Context, c Config, remove bool) error {
 			return nil
 		}
 		return err
-	}
-	if c.Auth == "api" {
-		saved := c
-		saved.ConfigDir = c.ConfigDir
-		// launchd does not inherit the interactive shell's API key.
-		if _, err := os.Stat(filepath.Join(saved.ConfigDir, "credentials.json")); err != nil {
-			return errors.New("save your API key with auth --stdin before installing a login service")
-		}
 	}
 	exe, err := os.Executable()
 	if err != nil {
@@ -66,7 +87,7 @@ func service(ctx context.Context, c Config, remove bool) error {
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer>
 <key>EnvironmentVariables</key><dict>%s</dict>
 <key>StandardOutPath</key><string>%s</string><key>StandardErrorPath</key><string>%s</string>
-</dict></plist>`, label, escape(exe), environment.String(), escape(filepath.Join(c.StateDir, "daemon.log")), escape(filepath.Join(c.StateDir, "daemon.log")))
+</dict></plist>`, serviceLabel, escape(exe), environment.String(), escape(filepath.Join(c.StateDir, "daemon.log")), escape(filepath.Join(c.StateDir, "daemon.log")))
 	// Do not chmod the user's shared LaunchAgents directory.
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return err
@@ -75,7 +96,7 @@ func service(ctx context.Context, c Config, remove bool) error {
 		return err
 	}
 	if b, err := exec.CommandContext(ctx, "launchctl", "bootstrap", domain, path).CombinedOutput(); err != nil {
-		return fmt.Errorf("install service: %s", b)
+		return fmt.Errorf("macOS couldn't start the login service:\n%s\nRun grok-commit daemon uninstall, then try installing again.", indent(strings.TrimSpace(string(b))))
 	}
 	if err := waitDaemon(ctx, c); err != nil {
 		return err

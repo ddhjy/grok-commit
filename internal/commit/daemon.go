@@ -59,11 +59,14 @@ func localCall(ctx context.Context, c Config, endpoint string, input any, out an
 	defer client.CloseIdleConnections()
 	resp, err := client.Do(req)
 	if err != nil {
-		return err
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errors.New("Couldn't reach the background service. Run grok-commit daemon stop and try again; to commit without it, add --no-daemon.")
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != 200 {
-		return fmt.Errorf("local worker returned HTTP %d", resp.StatusCode)
+		return fmt.Errorf("The background service returned an error (HTTP %d). Run grok-commit daemon stop and try again; to commit without it, add --no-daemon.", resp.StatusCode)
 	}
 	return json.NewDecoder(io.LimitReader(resp.Body, 16384)).Decode(out)
 }
@@ -77,7 +80,7 @@ func daemonReady(ctx context.Context, c Config) bool {
 
 func startDaemon(ctx context.Context, c Config) error {
 	if runtime.GOOS == "windows" {
-		return errors.New("background connection service is currently supported on macOS and Linux; use --no-daemon on Windows")
+		return errors.New("The background service is available only on macOS and Linux.")
 	}
 	if daemonReady(ctx, c) {
 		return nil
@@ -120,7 +123,7 @@ func waitDaemon(ctx context.Context, c Config) error {
 				return nil
 			}
 		case <-timeout.C:
-			return errors.New("background worker did not start; check daemon.log or use --no-daemon")
+			return fmt.Errorf("The background service didn't start within 3 seconds. Details are in %s. To commit without it, add --no-daemon.", filepath.Join(c.StateDir, "daemon.log"))
 		case <-ctx.Done():
 			return ctx.Err()
 		}
@@ -145,7 +148,7 @@ func stopDaemon(ctx context.Context, c Config) error {
 		case <-time.After(10 * time.Millisecond):
 		}
 	}
-	return errors.New("worker is still stopping")
+	return errors.New("The background service is still shutting down. Wait a moment, then try again.")
 }
 
 func runDaemon(ctx context.Context, c Config, keepalive bool) error {
@@ -200,7 +203,7 @@ func runDaemon(ctx context.Context, c Config, keepalive bool) error {
 			var request Request
 			err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2<<20)).Decode(&request)
 			if err != nil || !strings.HasPrefix(request.Model, "grok-") || request.System == "" || request.Prompt == "" {
-				result.Error = "invalid generation request"
+				result.Error = "The background service received an incomplete request. Run grok-commit daemon stop, then try again."
 			} else {
 				result, err = generateCached(r.Context(), g, request)
 				if err != nil {

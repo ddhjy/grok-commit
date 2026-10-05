@@ -3,6 +3,7 @@
 package commit
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -18,7 +19,10 @@ func lockWorker(path string) (func(), error) {
 	}
 	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("worker already running: %w", err)
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, errors.New("Another grok-commit process is already running.")
+		}
+		return nil, fmt.Errorf("Couldn't lock %s: %w", path, err)
 	}
 	return func() { _ = f.Close() }, nil
 }

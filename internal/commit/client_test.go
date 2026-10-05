@@ -3,6 +3,7 @@ package commit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -216,5 +217,63 @@ func TestCredentialsNeverFollowRedirect(t *testing.T) {
 	}
 	if leaked.Load() != 0 {
 		t.Fatal("credential-bearing redirect followed")
+	}
+}
+
+func TestStatusErrorsSayWhatToDo(t *testing.T) {
+	api := &Grok{config: Config{Auth: "api", BaseURL: apiURL, Model: "grok-4.3", Reasoning: "none"}}
+	cli := &Grok{config: Config{Auth: "cli", BaseURL: cliURL, Model: "grok-4.3", Reasoning: "none"}}
+	for _, c := range []struct {
+		g        *Grok
+		code     int
+		endpoint string
+		want     string
+	}{
+		{api, 401, "/models", "Grok didn't accept your API key (HTTP 401)."},
+		{cli, 401, "/chat/completions", "Run grok login, then try again."},
+		{api, 403, "/chat/completions", "out of credits"},
+		{cli, 426, "/chat/completions", "Grok needs a newer Grok CLI."},
+		{api, 429, "/chat/completions", "Wait a minute, then try again."},
+		{api, 307, "/models", "doesn't follow redirects, so your key is never sent to another server"},
+		{api, 404, "/models", "No Grok API was found at api.x.ai (HTTP 404)."},
+		{api, 404, "/chat/completions", "Check that model grok-4.3 is available to your account"},
+		{api, 503, "/chat/completions", "Grok is having trouble right now (HTTP 503)."},
+		{api, 418, "/chat/completions", "Grok sent an unexpected response (HTTP 418)."},
+	} {
+		if err := c.g.statusError(c.code, c.endpoint); !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%d %s: %v", c.code, c.endpoint, err)
+		}
+	}
+	var rejected authError
+	if !errors.As(api.statusError(401, "/models"), &rejected) || rejected.status != 401 {
+		t.Fatal("setup can't recognize a rejected key")
+	}
+}
+
+func TestConnectionErrorNamesTheServer(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	base := server.URL
+	server.Close()
+	c := testConfig(t, base)
+	g, _ := NewGrok(context.Background(), c)
+	defer g.Close()
+	if err := g.Warm(context.Background()); err == nil || !strings.HasPrefix(err.Error(), "Couldn't connect to Grok at "+strings.TrimPrefix(base, "http://")) {
+		t.Fatal(err)
+	}
+}
+
+func TestTimeoutSuggestsLongerTimeout(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	c := testConfig(t, server.URL)
+	c.RequestTimeout = 100 * time.Millisecond
+	g, _ := NewGrok(context.Background(), c)
+	defer g.Close()
+	_, err := g.Generate(context.Background(), Request{Model: c.Model})
+	if err == nil || err.Error() != "Grok didn't answer within 100ms. Try again, or allow more time with --timeout 200ms" {
+		t.Fatal(err)
 	}
 }
