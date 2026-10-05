@@ -1,0 +1,7 @@
+/dist/
+/grok-commit
+/grok-commit.exe
+*.test
+coverage.out
+.DS_Store
+.env
