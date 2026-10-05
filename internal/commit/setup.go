@@ -50,9 +50,19 @@ func setupCommand(ctx context.Context, c Config, args []string, in io.Reader, ou
 		if !ok {
 			return "", errors.New("a terminal is required for hidden API-key entry")
 		}
-		b, err := term.ReadPassword(int(f.Fd()))
-		fmt.Fprintln(out)
-		return strings.TrimSpace(string(b)), err
+		// Disable terminal echo before displaying the prompt, including when
+		// the user pastes immediately. ReadPassword also handles Ctrl-C safely.
+		state, err := term.MakeRaw(int(f.Fd()))
+		if err != nil {
+			return "", err
+		}
+		defer term.Restore(int(f.Fd()), state)
+		terminal := term.NewTerminal(struct {
+			io.Reader
+			io.Writer
+		}{f, out}, "")
+		key, err := terminal.ReadPassword("xAI API key (hidden): ")
+		return strings.TrimSpace(key), err
 	}
 	ui.login = func(ctx context.Context) error {
 		if _, err := exec.LookPath("grok"); err != nil {
@@ -120,7 +130,6 @@ func configureAuth(ctx context.Context, c Config, ui setupUI) error {
 		}
 		switch strings.TrimSpace(choice) {
 		case "", "1", "api":
-			fmt.Fprint(ui.out, "xAI API key (hidden): ")
 			var err error
 			newKey, err = ui.secret()
 			if err != nil {

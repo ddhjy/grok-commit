@@ -6,6 +6,7 @@ test_dir=$(cd "$test_dir" && pwd -P)
 trap 'rm -rf "$test_dir"' EXIT
 mkdir -p "$test_dir/bin" "$test_dir/release"
 go build -o "$test_dir/release/grok-commit" -ldflags '-X main.version=0.2.0' ./cmd/grok-commit
+python3 scripts/test-onboarding.py "$test_dir/release/grok-commit"
 os=$(go env GOOS)
 arch=$(go env GOARCH)
 archive=grok-commit_0.2.0_${os}_${arch}.tar.gz
