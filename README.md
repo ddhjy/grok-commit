@@ -93,6 +93,8 @@ Write subjects in Chinese. Include a scope when changing config or CLI behavior.
 
 The legacy `.bunnygit/rules/commit` path is supported when `.grok-commit-rules` is absent. The staged diff, selected history, and project rules are sent to the chosen Grok endpoint. Large diffs use an explicitly labelled, bounded summary with excerpts; not every line is included.
 
+Rules are limited to 32 KiB and must resolve to a regular file inside the repository.
+
 ## Fast connections
 
 On macOS and Linux, the first command starts a private local worker. It reuses HTTP connections across commands and exits after 20 minutes idle. Use these commands to control it:
@@ -147,6 +149,16 @@ State, cached subjects and the worker's diagnostic log live under the OS user ca
 The model must return a successful terminal `stop` event and a valid single-line subject. Partial, truncated, refused, tool-call and malformed responses do not commit. The prompt uses a captured Git tree, and the index is checked again before committing; if it changed, the command stops. Hooks may add time or reject the commit.
 
 Measure separately: cold worker startup, warm generation with `--no-cache`, cache hits, and hooks/signing. Include the whole command's wall time and report P50/P95 over varied diffs. A network-dependent tool cannot guarantee every call finishes under two seconds.
+
+Release validation on macOS arm64, using Grok 4.3 through an existing CLI login:
+
+| Scenario | Complete command wall time |
+| --- | --- |
+| Cold worker, no local result cache (1 sample) | 1.880 s |
+| Warm connection, no local result cache (6 samples) | median 0.925 s; max / nearest-rank P95 1.005 s |
+| Exact-input cache hit (1 sample) | 0.146 s |
+
+These are small-sample measurements, not an SLA. Warm cases cover a six-file feature diff, a parser fix, documentation, tests, and Chinese project rules. All create actual commits in disposable repositories with hooks/signing disabled. Warmup is outside the warm-case timer; it is included in the cold case. Provider-side prompt caching is uncontrolled. Public API-key requests and other machines require separate measurement. [Raw measurements](docs/benchmarks/2026-10-05.json).
 
 ## Development and releases
 

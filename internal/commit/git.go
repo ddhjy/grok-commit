@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,11 +71,8 @@ func (r Repository) snapshot(ctx context.Context, history bool) (Snapshot, error
 		return s, err
 	}
 	for _, name := range []string{".grok-commit-rules", filepath.Join(".bunnygit", "rules", "commit")} {
-		b, e := os.ReadFile(filepath.Join(strings.TrimSpace(root), name))
+		b, e := readRules(strings.TrimSpace(root), name)
 		if e == nil {
-			if len(b) > 32768 {
-				return s, errors.New("commit rules exceed 32 KiB")
-			}
 			s.Rules = string(b)
 			break
 		}
@@ -83,6 +81,38 @@ func (r Repository) snapshot(ctx context.Context, history bool) (Snapshot, error
 		}
 	}
 	return s, nil
+}
+
+func readRules(root, name string) ([]byte, error) {
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Join(root, name))
+	if err != nil {
+		return nil, err
+	}
+	rel, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, errors.New("commit rules must stay inside the repository")
+	}
+	f, err := os.Open(resolved)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, errors.New("commit rules must be a regular file")
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 32769))
+	if len(b) > 32768 {
+		return nil, errors.New("commit rules exceed 32 KiB")
+	}
+	return b, err
 }
 
 func compactDiff(diff, stat string) string {

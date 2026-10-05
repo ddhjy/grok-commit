@@ -170,7 +170,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 	if s.Truncated {
 		fmt.Fprintln(out, "Large diff: using bounded excerpts and the file summary.")
 	}
-	req := Request{Model: c.Model, Reasoning: c.Reasoning, System: systemPrompt, Prompt: Prompt(s.Diff, s.History, s.Rules), NoCache: noCache}
+	req := Request{Model: c.Model, Reasoning: c.Reasoning, System: SystemPrompt(s.Rules), Prompt: Prompt(s.Diff, s.History, s.Rules), NoCache: noCache}
 	mark("diff")
 	fmt.Fprintf(out, "\nGenerating (%s)... ", c.Model)
 	result, err := generate(ctx, c, req, noDaemon)
@@ -248,6 +248,10 @@ func daemonCommand(ctx context.Context, c Config, args []string, out io.Writer) 
 	}
 	if runtime.GOOS == "windows" {
 		return errors.New("Windows uses direct requests; a background service is not required")
+	}
+	// Removing a login service must work even after credentials are removed.
+	if args[0] == "uninstall" {
+		return service(ctx, c, true)
 	}
 	if err := c.Resolve(); err != nil {
 		return err

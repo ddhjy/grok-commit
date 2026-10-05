@@ -264,6 +264,21 @@ func TestLargeDiffIsBoundedAndLabelled(t *testing.T) {
 	}
 }
 
+func TestRulesCannotReadOutsideRepository(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink fixture requires privileges on Windows")
+	}
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "private")
+	writeTest(t, outside, "private data")
+	if err := os.Symlink(outside, filepath.Join(root, ".grok-commit-rules")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRules(root, ".grok-commit-rules"); err == nil {
+		t.Fatal("followed rules outside repository")
+	}
+}
+
 func ExamplePrompt() {
 	fmt.Println(strings.Contains(Prompt("+hello", "", "Use Chinese"), "Use Chinese")) // Output: true
 }

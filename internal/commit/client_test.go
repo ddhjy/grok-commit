@@ -43,6 +43,19 @@ func TestSubjectValidation(t *testing.T) {
 	}
 }
 
+func TestProjectRulesOverrideDefaultLanguage(t *testing.T) {
+	rules := "Use Chinese. Use feat(config): as the prefix."
+	if !strings.Contains(SystemPrompt(rules), rules) {
+		t.Fatal("rules missing from system instructions")
+	}
+	if strings.Contains(Prompt("diff", "", rules), "Use English.") {
+		t.Fatal("conflicting default language")
+	}
+	if !strings.Contains(Prompt("diff", "", ""), "Use English.") {
+		t.Fatal("default language missing")
+	}
+}
+
 func TestStreamRequiresSuccessfulCompletion(t *testing.T) {
 	cases := map[string]string{
 		"partial":      `data: {"choices":[{"delta":{"content":"feat: partial"}}]}`,

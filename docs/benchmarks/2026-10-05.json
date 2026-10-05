@@ -1,0 +1,91 @@
+{
+  "date": "2026-10-05",
+  "platform": "macOS arm64",
+  "model": "grok-4.3",
+  "reasoning": "none",
+  "endpoint": "Grok CLI compatibility endpoint",
+  "measurement": "Outer process wall time including staging and a real commit in disposable repositories; hooks and signing disabled. Local result caching disabled unless explicitly marked. Provider-side caching is uncontrolled.",
+  "runs": [
+    {
+      "case": "six-file feature",
+      "cold_worker": true,
+      "cache_enabled": false,
+      "wall_s": 1.88,
+      "exit": 0,
+      "subject": "feat: support ordered multi-device pathAliases arrays",
+      "profile": "[profile] preflight=20.6ms stage=19.5ms diff=74.6ms grok=1687.0ms commit=56.3ms total=1858.0ms"
+    },
+    {
+      "case": "six-file feature",
+      "cold_worker": false,
+      "cache_enabled": false,
+      "wall_s": 0.926,
+      "exit": 0,
+      "subject": "feat: support ordered multi-device path aliases",
+      "profile": "[profile] preflight=14.8ms stage=13.5ms diff=63.9ms grok=779.7ms commit=48.0ms total=920.0ms"
+    },
+    {
+      "case": "six-file feature",
+      "cold_worker": false,
+      "cache_enabled": false,
+      "wall_s": 0.928,
+      "exit": 0,
+      "subject": "feat: support ordered multi-device path arrays in aliases",
+      "profile": "[profile] preflight=16.7ms stage=15.0ms diff=80.0ms grok=764.3ms commit=46.3ms total=922.3ms"
+    },
+    {
+      "case": "six-file feature",
+      "cold_worker": false,
+      "cache_enabled": true,
+      "wall_s": 1.058,
+      "exit": 0,
+      "subject": "feat: support multi-device path aliases with ordered candidates",
+      "profile": "[profile] preflight=163.4ms stage=16.4ms diff=72.4ms grok=760.0ms commit=40.0ms total=1052.2ms"
+    },
+    {
+      "case": "six-file feature",
+      "cold_worker": false,
+      "cache_enabled": true,
+      "wall_s": 0.146,
+      "exit": 0,
+      "subject": "feat: support multi-device path aliases with ordered candidates",
+      "profile": "[profile] preflight=15.2ms stage=14.6ms diff=74.4ms grok=0.2ms commit=35.6ms total=140.1ms"
+    },
+    {
+      "case": "chinese",
+      "cache": false,
+      "prewarmed": true,
+      "wall_s": 0.889,
+      "exit": 0,
+      "subject": "feat(config): 更新 PATHS 配置列表",
+      "profile": "[profile] preflight=20.7ms stage=14.0ms diff=65.6ms grok=717.9ms commit=62.4ms total=880.6ms"
+    },
+    {
+      "case": "fix",
+      "cache": false,
+      "prewarmed": true,
+      "wall_s": 0.923,
+      "exit": 0,
+      "subject": "fix: strip whitespace before parsing int",
+      "profile": "[profile] preflight=14.1ms stage=12.9ms diff=66.6ms grok=756.2ms commit=67.0ms total=916.9ms"
+    },
+    {
+      "case": "docs",
+      "cache": false,
+      "prewarmed": true,
+      "wall_s": 0.909,
+      "exit": 0,
+      "subject": "docs: add installation instructions to README",
+      "profile": "[profile] preflight=14.3ms stage=14.0ms diff=64.3ms grok=742.0ms commit=68.4ms total=903.0ms"
+    },
+    {
+      "case": "tests",
+      "cache": false,
+      "prewarmed": true,
+      "wall_s": 1.005,
+      "exit": 0,
+      "subject": "test: add whitespace trimming test",
+      "profile": "[profile] preflight=14.3ms stage=12.3ms diff=62.3ms grok=843.4ms commit=66.3ms total=998.7ms"
+    }
+  ]
+}
