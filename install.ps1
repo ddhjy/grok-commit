@@ -41,7 +41,13 @@
         if ($LASTEXITCODE -ne 0 -or $reported -ne "grok-commit $version") { throw 'Executable version check failed.' }
         $target = Join-Path $installDir 'grok-commit.exe'
         # Windows needs other foreground invocations closed before replacing.
-        if (Test-Path $target) { [IO.File]::Replace($candidate, $target, $null) }
+        if (Test-Path $target) {
+            # PowerShell can coerce a null string argument into an empty path.
+            # An explicit backup works with both Windows PowerShell and pwsh.
+            $backup = "$candidate.backup"
+            [IO.File]::Replace($candidate, $target, $backup)
+            Remove-Item $backup -Force
+        }
         else { [IO.File]::Move($candidate, $target) }
         $candidate = $null
         & $target __install

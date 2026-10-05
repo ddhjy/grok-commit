@@ -163,10 +163,16 @@ func configureAuth(ctx context.Context, c Config, ui setupUI) error {
 		if err := setConfigValue(c, "auth", "api"); err != nil {
 			return err
 		}
+		if key := strings.TrimSpace(os.Getenv("XAI_API_KEY")); key != "" && key != newKey {
+			fmt.Fprintln(ui.out, "Remove or replace XAI_API_KEY in this shell to use the newly saved key.")
+		}
 	} else if resolveErr != nil || ui.auth != "" {
 		if err := setConfigValue(c, "auth", probe.Auth); err != nil {
 			return err
 		}
+	}
+	if auth := os.Getenv("GROK_COMMIT_AUTH"); auth != "" && auth != "auto" && auth != probe.Auth {
+		fmt.Fprintln(ui.out, "Remove or update GROK_COMMIT_AUTH in this shell to use the selected authentication mode.")
 	}
 	fmt.Fprintln(ui.out, "Git: available. Grok: connected.")
 	return nil
