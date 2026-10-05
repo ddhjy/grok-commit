@@ -1,6 +1,6 @@
 # grok-commit
 
-A fast, standalone Git commit CLI powered by **Grok**. One native binary, no Python or Node.js, no Go dependencies beyond the standard library.
+A fast, standalone Git commit CLI powered by **Grok**. One native binary. No Python, Node.js, or Go installation needed to use it.
 
 ```text
 $ grok-commit -a
@@ -16,33 +16,69 @@ The example illustrates the output format, not a latency guarantee. Network, mod
 
 ## Install
 
-Download the archive for your OS and architecture from [GitHub Releases](https://github.com/ddhjy/grok-commit/releases). Each release includes macOS and Linux `.tar.gz` files, Windows `.zip` files, and `checksums.txt`.
-
-For example, on an Apple Silicon Mac:
+**macOS / Linux** (Apple Silicon, Intel, amd64, arm64):
 
 ```sh
-curl -fLO https://github.com/ddhjy/grok-commit/releases/download/v0.1.0/grok-commit_0.1.0_darwin_arm64.tar.gz
-curl -fLO https://github.com/ddhjy/grok-commit/releases/download/v0.1.0/checksums.txt
-shasum -a 256 -c checksums.txt --ignore-missing
-tar -xzf grok-commit_0.1.0_darwin_arm64.tar.gz
-mkdir -p "$HOME/.local/bin"
-install -m 755 grok-commit "$HOME/.local/bin/grok-commit"
+curl -fsSL https://raw.githubusercontent.com/ddhjy/grok-commit/main/install.sh | sh
 ```
 
-Ensure `~/.local/bin` is on `PATH`. On Windows, extract the ZIP and add its directory to your user `PATH`. Git must already be installed. Release binaries are not Developer ID/Authenticode signed.
+**Windows PowerShell** (amd64 / arm64):
 
-With Go 1.23 or newer:
+```powershell
+irm https://raw.githubusercontent.com/ddhjy/grok-commit/main/install.ps1 | iex
+```
+
+The installer selects your platform, checks the release's SHA-256 checksum, installs for your user without administrator privileges, configures PATH, and runs setup. On macOS/Linux, open a new terminal after installation to pick up PATH changes. Install locations: `~/.local/bin/grok-commit` or `%LocalAppData%\Programs\grok-commit\grok-commit.exe`.
+
+Setup reuses existing Grok credentials, or guides you through hidden API-key entry / signing in with an installed Grok CLI. It checks Git and the Grok connection without generating a subject or committing anything. **You need Git and a Grok account/API key once; credentials cannot be bundled with the tool.** If setup is interrupted or you're offline, the binary stays installed. Resume with:
+
+```sh
+grok-commit setup
+cd your-repository
+grok-commit -a
+```
+
+Running the tool interactively without credentials also opens setup before making index changes. In scripts/CI, missing credentials produce an actionable error without prompting. Use `setup --yes` to validate existing credentials noninteractively.
+
+For managed provisioning, set `GROK_COMMIT_INSTALL_DIR`, `GROK_COMMIT_VERSION=v0.2.0`, `GROK_COMMIT_NO_SETUP=1`, or `GROK_COMMIT_NO_PATH=1` before running the installer. You can inspect/download the installer first or install manually from [GitHub Releases](https://github.com/ddhjy/grok-commit/releases), then run `grok-commit setup`. Release binaries are not Developer ID/Authenticode signed.
+
+With **Go 1.26 or newer**, you can also build from source:
 
 ```sh
 go install github.com/ddhjy/grok-commit/cmd/grok-commit@latest
+grok-commit setup
 ```
+
+## Quiet automatic updates
+
+Official installations default to **one check every 7 days**, starting seven days after installation. After a successful normal command, a detached helper checks GitHub for a newer stable release. It downloads the matching binary, verifies its SHA-256 checksum and version, and replaces the executable. The next invocation uses it. No update prompt, daily reminder, or network wait is added to committing. Nothing wakes up while you aren't using the tool; CI does not trigger automatic checks.
+
+- Offline, rate-limited, or failed update? Keep the working version and wait until the next scheduled check. No retry on every command or every day.
+- Only stable releases from this repository are accepted. Concurrent commands share an update lock. Existing commands finish with their original executable; Windows waits briefly if it is still in use.
+- The previous binary is retained. Rollback verifies it and prevents automatically reinstalling the version you just rolled back. A later release can still update normally.
+- No Grok credentials, diffs, or repository information are sent to GitHub. GitHub sees ordinary release-download requests.
+- Package-manager installations and development builds are not automatically replaced. Follow the package manager's update process.
+
+```sh
+grok-commit update --status          # Version, next check, last error, rollback availability
+grok-commit update --interval 14d    # Check every two weeks instead (1–365 days)
+grok-commit update --disable         # Opt out
+grok-commit update --enable          # Opt back in
+grok-commit update --check           # Check now without installing
+grok-commit update                   # Install latest stable now
+grok-commit update --rollback        # Restore previous binary
+```
+
+Windows manual install/rollback runs in a detached helper too; use `update --status` to see completion. `GROK_COMMIT_AUTO_UPDATE=0` disables automatic updates for the current environment. Disabling updates also stops an in-progress download from being applied when the helper next checks the setting. Manual updates remain available.
+
+**Upgrading from v0.1.0:** run the installer once to get setup and automatic updates. Future versions then update automatically. Downgrading to a release predating this updater requires rerunning the installer to return to the update-capable version.
 
 ## Authenticate
 
-Choose either option:
+The recommended first step is `grok-commit setup`. To replace an expired key or switch accounts, use `grok-commit setup --auth api` or `grok-commit setup --auth cli`. For manual configuration, choose either option:
 
 1. **xAI API key (recommended for standalone use):** set `XAI_API_KEY`. The tool calls the [public xAI API](https://docs.x.ai/developers/quickstart); API usage follows your API account's billing.
-2. **Existing Grok CLI login:** if no API key is configured, the tool reads the installed Grok CLI's login and version and uses its first-party endpoint. Run `grok` and sign in first. This compatibility mode depends on the CLI's authentication format and endpoint, which may change. It does not copy or print your login token.
+2. **Existing Grok CLI login:** if no API key is configured, the tool reads the installed Grok CLI's login and version and uses its first-party endpoint. Run `grok login` and sign in first. This compatibility mode depends on the CLI's authentication format and endpoint, which may change. It does not copy or print your login token.
 
 To save an API key for future commands or a login service, pass it on stdin:
 
@@ -115,7 +151,7 @@ grok-commit daemon uninstall
 
 Install the binary at its final location first. With an API key, save it using `auth --stdin` and unset `XAI_API_KEY` before installing the service. On Linux, use the on-demand worker or run `grok-commit daemon run --keepalive` under your own service manager. Windows currently uses direct requests; automatic background connection reuse is available on macOS/Linux only.
 
-The worker refreshes its connection with a model-list request every 25 seconds. It never watches repositories or generates subjects in the background. Requests use a private Unix socket. After replacing the binary or updating the Grok CLI, stop/restart the worker (or reinstall the login service) to load the new version.
+The worker refreshes its connection with a model-list request every 25 seconds. It never watches repositories or generates subjects in the background. Requests use a private Unix socket. From v0.2.0 onward, each release uses its own worker address; a replaced worker drains in-flight requests and exits, so new invocations use the new code. After updating the Grok CLI itself, stop/restart the worker (or reinstall the login service) to refresh its client version. Workers from v0.1.0 exit on their usual idle timeout; reinstall a v0.1.0 login service once if you enabled one.
 
 If generation is still pending after 700 ms, one additional Grok request starts; the first valid completed result wins. **A slow call can consume two generations.** Set `--hedge-delay 0` to disable this behavior. Cancellation stops outstanding requests, but already generated tokens may still be billed.
 
@@ -136,7 +172,9 @@ Optional `config.json` in the OS user configuration directory:
   "model": "grok-4.3",
   "auth": "auto",
   "timeout": "30s",
-  "hedge_delay": "700ms"
+  "hedge_delay": "700ms",
+  "auto_update": true,
+  "update_interval": "7d"
 }
 ```
 
@@ -166,9 +204,9 @@ These are small-sample measurements, not an SLA. Warm cases cover a six-file fea
 make build
 make test
 make check
-make package VERSION=0.1.0
+make package VERSION=0.2.0
 ```
 
-Tests use disposable repositories and local fake HTTP servers, not real model credentials. CI runs on macOS, Linux and Windows. The race detector runs on macOS/Linux. Tagging `v*` builds six archives and publishes a GitHub Release with SHA-256 checksums. No Go module downloads are needed.
+Tests use disposable repositories and local fake HTTP servers, not real model credentials. CI runs on macOS, Linux and Windows. The race detector runs on macOS/Linux. Tagging `v*` builds six archives and publishes a GitHub Release with SHA-256 checksums. The only non-standard-library dependencies are the official Go terminal/system packages for hidden password input and Windows process locking. Installer tests run offline with real native binaries; no account credentials are required.
 
 MIT licensed.

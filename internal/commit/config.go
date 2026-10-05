@@ -20,6 +20,9 @@ const apiURL = "https://api.x.ai/v1"
 const cliURL = "https://cli-chat-proxy.grok.com/v1"
 
 type Config struct {
+	AutoUpdate     *bool         `json:"auto_update,omitempty"`
+	UpdateInterval string        `json:"update_interval,omitempty"`
+	Version        string        `json:"-"`
 	Model          string        `json:"model"`
 	Reasoning      string        `json:"reasoning"`
 	Auth           string        `json:"auth"`
@@ -30,6 +33,7 @@ type Config struct {
 	ConfigDir      string        `json:"-"`
 	RequestTimeout time.Duration `json:"-"`
 	Hedge          time.Duration `json:"-"`
+	keyOverride    string
 }
 
 func configDir() (string, error) {
@@ -129,6 +133,9 @@ func (c *Config) Resolve() error {
 }
 
 func (c Config) apiKey() (string, error) {
+	if c.keyOverride != "" {
+		return c.keyOverride, nil
+	}
 	if key := strings.TrimSpace(os.Getenv("XAI_API_KEY")); key != "" {
 		return key, nil
 	}
@@ -149,7 +156,7 @@ func (c Config) credential() (string, error) {
 	if c.Auth == "api" {
 		key, _ := c.apiKey()
 		if key == "" {
-			return "", errors.New("set XAI_API_KEY or run grok-commit auth --stdin")
+			return "", errors.New("run grok-commit setup, or set XAI_API_KEY")
 		}
 		return key, nil
 	}
@@ -163,7 +170,7 @@ func (c Config) credential() (string, error) {
 	}
 	b, err := os.ReadFile(filepath.Join(home, "auth.json"))
 	if err != nil {
-		return "", errors.New("no Grok credentials: set XAI_API_KEY, or sign in with the Grok CLI")
+		return "", errors.New("no Grok credentials: run grok-commit setup, or set XAI_API_KEY")
 	}
 	var entries map[string]struct {
 		Key string `json:"key"`

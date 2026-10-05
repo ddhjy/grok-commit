@@ -24,7 +24,7 @@ func main() {
 }
 
 func run() error {
-	version := flag.String("version", "0.1.0", "release version without v")
+	version := flag.String("version", "0.2.0", "release version without v")
 	flag.Parse()
 	if *version == "" || strings.ContainsAny(*version, " /\\\n\r\t") {
 		return fmt.Errorf("invalid version")

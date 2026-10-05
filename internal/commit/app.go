@@ -18,6 +18,8 @@ import (
 const help = `grok-commit — fast, accurate Git commit subjects powered by Grok
 
 Usage: grok-commit [options]
+       grok-commit setup [--yes|--auth api|cli]
+       grok-commit update [--check|--status|--disable|--enable|--rollback|--interval 7d]
        grok-commit daemon start|status|stop|warm|install|uninstall
        grok-commit auth --stdin
        grok-commit doctor
@@ -61,6 +63,23 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 	c, err := LoadConfig()
 	if err != nil {
 		return err
+	}
+	c.Version = version
+	if len(args) > 0 {
+		switch args[0] {
+		case "setup":
+			return setupCommand(ctx, c, args[1:], stdin, out, errOut, version)
+		case "update":
+			return updateCommand(ctx, c, args[1:], out, version)
+		case "__install":
+			target, err := executablePath()
+			if err != nil {
+				return err
+			}
+			return registerInstallation(c, target, version)
+		case "__update":
+			return runUpdateWorker(ctx, c, args[1:], version)
+		}
 	}
 	if len(args) > 0 && args[0] == "daemon" {
 		return daemonCommand(ctx, c, args[1:], out)
@@ -120,6 +139,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 	}
 	if dry && push {
 		return errors.New("--dry-run cannot be combined with --push")
+	}
+	// First-time interactive use leads to setup before touching the Git index.
+	if probe := c; terminalInput(stdin) && probe.Resolve() != nil {
+		return setupCommand(ctx, c, nil, stdin, out, errOut, version)
 	}
 	profile = profile || os.Getenv("GROK_COMMIT_PROFILE") == "1"
 	noCache = noCache || os.Getenv("GROK_COMMIT_CACHE") == "0"

@@ -25,3 +25,10 @@ jobs:
         if: runner.os != 'Windows'
         run: go test -race -timeout 120s ./...
       - run: go build ./cmd/grok-commit
+      - name: Unix installer and rollback
+        if: runner.os != 'Windows'
+        run: sh scripts/test-install.sh
+      - name: Windows installer and background rollback
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/test-install.ps1

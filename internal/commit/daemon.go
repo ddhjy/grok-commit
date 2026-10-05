@@ -32,7 +32,7 @@ func socketPath(c Config) string {
 			key = ""
 		}
 	}
-	identity := strings.Join([]string{"1", c.StateDir, c.ConfigDir, c.Auth, os.Getenv("GROK_HOME"), c.BaseURL, c.Timeout, c.HedgeDelay, digest([]byte(key))}, "\x00")
+	identity := strings.Join([]string{"1", c.Version, c.StateDir, c.ConfigDir, c.Auth, os.Getenv("GROK_HOME"), c.BaseURL, c.Timeout, c.HedgeDelay, digest([]byte(key))}, "\x00")
 	return filepath.Join(os.TempDir(), "grok-commit-"+digest([]byte(identity))[:16], "worker.sock")
 }
 
@@ -215,12 +215,23 @@ func runDaemon(ctx context.Context, c Config, keepalive bool) error {
 	})
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 2 * time.Second, ReadTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second,
 		BaseContext: func(net.Listener) context.Context { return ctx }}
+	replaced := make(chan struct{})
+	stopped := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		shutdown, stop := context.WithTimeout(context.Background(), time.Second)
+		defer close(stopped)
+		grace := time.Second
+		select {
+		case <-ctx.Done():
+		case <-replaced:
+			// Let in-flight commits finish before retiring the old version.
+			grace = c.RequestTimeout + 5*time.Second
+		}
+		shutdown, stop := context.WithTimeout(context.Background(), grace)
 		defer stop()
 		_ = server.Shutdown(shutdown)
 	}()
+	exe, _ := executablePath()
+	original, _ := os.Stat(exe)
 	go func() {
 		ticker := time.NewTicker(25 * time.Second)
 		defer ticker.Stop()
@@ -229,6 +240,10 @@ func runDaemon(ctx context.Context, c Config, keepalive bool) error {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if current, e := os.Stat(exe); e == nil && original != nil && !os.SameFile(original, current) {
+					close(replaced)
+					return
+				}
 				if !keepalive && time.Since(time.Unix(last.Load(), 0)) > 20*time.Minute {
 					cancel()
 					return
@@ -239,6 +254,7 @@ func runDaemon(ctx context.Context, c Config, keepalive bool) error {
 	}()
 	err = server.Serve(listener)
 	if errors.Is(err, http.ErrServerClosed) {
+		<-stopped
 		return nil
 	}
 	return err
