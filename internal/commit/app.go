@@ -249,9 +249,6 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 		return err
 	}
 	fmt.Fprintln(out, "\n"+strings.TrimRight(s.Stat, "\n"))
-	if s.Truncated {
-		fmt.Fprintln(out, "Large diff: Grok will see the file summary and the first part of each file's changes.")
-	}
 	req := Request{Model: c.Model, Reasoning: c.Reasoning, System: SystemPrompt(s.Rules), Prompt: Prompt(s.Diff, s.History, s.Rules), NoCache: noCache}
 	mark("diff")
 	fmt.Fprintf(out, "\nWriting the commit subject with %s... ", c.Model)

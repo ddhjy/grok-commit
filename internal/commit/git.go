@@ -52,7 +52,6 @@ func gitError(command, stderr string, err error) error {
 
 type Snapshot struct {
 	Tree, Diff, Stat, History, Rules string
-	Truncated                        bool
 }
 
 func (r Repository) snapshot(ctx context.Context, history bool) (Snapshot, error) {
@@ -85,7 +84,6 @@ func (r Repository) snapshot(ctx context.Context, history bool) (Snapshot, error
 	}
 	if len(s.Diff) > 50000 {
 		s.Diff = compactDiff(s.Diff, s.Stat)
-		s.Truncated = true
 	}
 	if history {
 		s.History, _ = r.git(ctx, "log", "-10", "--format=%s")
