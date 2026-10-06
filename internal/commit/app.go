@@ -230,7 +230,6 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 		return err
 	}
 	mark("preflight")
-	fmt.Fprintln(out, strings.TrimRight(status, "\n"))
 	if !noStage && !dry {
 		stageFlag := "-u"
 		if all {
@@ -248,7 +247,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "\n"+strings.TrimRight(s.Stat, "\n"))
+	fmt.Fprintln(out, strings.TrimRight(s.Stat, "\n"))
+	if note := leftOut(status, !noStage && !dry, all); note != "" {
+		fmt.Fprintln(out, note)
+	}
 	req := Request{Model: c.Model, Reasoning: c.Reasoning, System: SystemPrompt(s.Rules), Prompt: Prompt(s.Diff, s.History, s.Rules), NoCache: noCache}
 	mark("diff")
 	fmt.Fprintf(out, "\nWriting the commit subject with %s... ", c.Model)
@@ -313,6 +315,46 @@ func unexpectedArgument(arg string) error {
 		return fmt.Errorf("Unknown command %q. Did you mean grok-commit %s?", arg, match)
 	}
 	return fmt.Errorf("grok-commit doesn't take arguments like %q; it writes the commit subject itself. To commit only some files, stage them with git add, then run: grok-commit --no-stage", arg)
+}
+
+// leftOut names what the commit skips; the stat above already lists what it includes.
+func leftOut(status string, staged, all bool) string {
+	var untracked, unstaged int
+	for _, line := range strings.Split(strings.TrimRight(status, "\n"), "\n") {
+		switch {
+		case len(line) < 2:
+		case strings.HasPrefix(line, "?? "):
+			untracked++
+		case line[1] != ' ':
+			unstaged++
+		}
+	}
+	var parts []string
+	switch {
+	case staged && all:
+	case staged:
+		if untracked > 0 {
+			parts = append(parts, plural(untracked, "new file")+" (add -a to include)")
+		}
+	default:
+		if unstaged > 0 {
+			parts = append(parts, plural(unstaged, "file")+" with unstaged changes")
+		}
+		if untracked > 0 {
+			parts = append(parts, plural(untracked, "new file"))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " Not included: " + strings.Join(parts, ", ")
+}
+
+func plural(n int, noun string) string {
+	if n == 1 {
+		return "1 " + noun
+	}
+	return fmt.Sprintf("%d %ss", n, noun)
 }
 
 func nothingStaged(status string, all, dry, noStage bool) error {

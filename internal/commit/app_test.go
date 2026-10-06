@@ -374,3 +374,19 @@ func TestRulesCannotReadOutsideRepository(t *testing.T) {
 func ExamplePrompt() {
 	fmt.Println(strings.Contains(Prompt("+hello", "", "Use Chinese"), "Use Chinese")) // Output: true
 }
+
+func TestLeftOut(t *testing.T) {
+	status := " M code.txt\nMM both.txt\nM  staged.txt\n?? new.txt\n?? other.txt\n"
+	for _, c := range []struct {
+		staged, all bool
+		want        string
+	}{
+		{true, true, ""},
+		{true, false, " Not included: 2 new files (add -a to include)"},
+		{false, false, " Not included: 2 files with unstaged changes, 2 new files"},
+	} {
+		if got := leftOut(status, c.staged, c.all); got != c.want {
+			t.Errorf("leftOut(%v, %v) = %q, want %q", c.staged, c.all, got, c.want)
+		}
+	}
+}
