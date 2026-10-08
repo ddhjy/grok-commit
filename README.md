@@ -4,12 +4,18 @@ A fast, standalone Git commit CLI powered by **Grok**. One native binary. No Pyt
 
 ```text
 $ grok-commit -a
+ M internal/alias/paths.go
 
-Writing the commit subject with grok-4.3... ✓
+Staging changes...
+
+ internal/alias/paths.go | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+Generating...
 
 → feat: support ordered paths for shared aliases
 
-✓ Committed in 1.234s
+Committed in 1.234s
 ```
 
 The example illustrates the output format, not a latency guarantee. Network, model load, repository size, Git hooks, signing and authentication affect elapsed time.

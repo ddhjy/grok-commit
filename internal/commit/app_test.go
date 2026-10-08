@@ -374,3 +374,22 @@ func TestRulesCannotReadOutsideRepository(t *testing.T) {
 func ExamplePrompt() {
 	fmt.Println(strings.Contains(Prompt("+hello", "", "Use Chinese"), "Use Chinese")) // Output: true
 }
+
+func TestColorStatusAndStat(t *testing.T) {
+	status := "M  a.go\n M b.go\nMM c.go\n?? d.go"
+	if got := colorStatus(status, false); got != status {
+		t.Fatalf("plain status changed: %q", got)
+	}
+	want := "\x1b[32mM\x1b[m  a.go\n \x1b[31mM\x1b[m b.go\n\x1b[32mM\x1b[m\x1b[31mM\x1b[m c.go\n\x1b[31m??\x1b[m d.go"
+	if got := colorStatus(status, true); got != want {
+		t.Fatalf("status = %q", got)
+	}
+	stat := " a.go | 5 +++--\n b.png | Bin 0 -> 12 bytes\n c.go | 0\n 3 files changed, 3 insertions(+), 2 deletions(-)"
+	if got := colorStat(stat, false); got != stat {
+		t.Fatalf("plain stat changed: %q", got)
+	}
+	want = " a.go | 5 \x1b[32m+++\x1b[m\x1b[31m--\x1b[m\n b.png | Bin 0 -> 12 bytes\n c.go | 0\n 3 files changed, 3 insertions(+), 2 deletions(-)"
+	if got := colorStat(stat, true); got != want {
+		t.Fatalf("stat = %q", got)
+	}
+}

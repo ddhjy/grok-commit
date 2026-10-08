@@ -230,8 +230,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 		return err
 	}
 	mark("preflight")
-	fmt.Fprintln(out, strings.TrimRight(status, "\n"))
+	color := colorOutput(out)
+	fmt.Fprintln(out, colorStatus(strings.TrimRight(status, "\n"), color))
 	if !noStage && !dry {
+		fmt.Fprintln(out, "\nStaging changes...")
 		stageFlag := "-u"
 		if all {
 			stageFlag = "-A"
@@ -248,10 +250,10 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(out, "\n"+strings.TrimRight(s.Stat, "\n"))
+	fmt.Fprintln(out, "\n"+colorStat(strings.TrimRight(s.Stat, "\n"), color))
 	req := Request{Model: c.Model, Reasoning: c.Reasoning, System: SystemPrompt(s.Rules), Prompt: Prompt(s.Diff, s.History, s.Rules), NoCache: noCache}
 	mark("diff")
-	fmt.Fprintf(out, "\nWriting the commit subject with %s... ", c.Model)
+	fmt.Fprintln(out, "\nGenerating...")
 	result, err := generate(ctx, c, req, noDaemon)
 	mark("grok")
 	if err != nil {
@@ -259,13 +261,8 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 			fmt.Fprintln(out)
 			return errCommitCancelled
 		}
-		fmt.Fprintln(out, "failed; nothing was committed")
+		fmt.Fprintln(out, "\nFailed; nothing was committed.")
 		return err
-	}
-	if result.Cached {
-		fmt.Fprintln(out, "✓ (cached)")
-	} else {
-		fmt.Fprintln(out, "✓")
 	}
 	fmt.Fprintf(out, "\n→ %s\n", result.Subject)
 	if dry {
@@ -276,7 +273,7 @@ func Run(ctx context.Context, args []string, stdin io.Reader, out, errOut io.Wri
 		return err
 	}
 	mark("commit")
-	fmt.Fprintf(out, "\n✓ Committed in %.3fs\n", time.Since(start).Seconds())
+	fmt.Fprintf(out, "\nCommitted in %.3fs\n", time.Since(start).Seconds())
 	if push {
 		cmd := exec.CommandContext(ctx, "git", "push")
 		cmd.Stdin = stdin
