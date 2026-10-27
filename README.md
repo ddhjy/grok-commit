@@ -4,8 +4,6 @@ A fast, standalone Git commit CLI powered by **Grok**. One native binary. No Pyt
 
 ```text
 $ grok-commit -a
- M internal/alias/paths.go
-
 Staging changes...
 
  internal/alias/paths.go | 12 +++++++++---
@@ -84,7 +82,7 @@ Windows manual install/rollback runs in a detached helper too; use `update --sta
 The recommended first step is `grok-commit setup`. To replace an expired key or switch accounts, use `grok-commit setup --auth api` or `grok-commit setup --auth cli`. For manual configuration, choose either option:
 
 1. **xAI API key (recommended for standalone use):** set `XAI_API_KEY`. The tool calls the [public xAI API](https://docs.x.ai/developers/quickstart); API usage follows your API account's billing.
-2. **Existing Grok CLI login:** if no API key is configured, the tool reads the installed Grok CLI's login and version and uses its first-party endpoint. Run `grok login` and sign in first. This compatibility mode depends on the CLI's authentication format and endpoint, which may change. It does not copy or print your login token.
+2. **Existing Grok CLI login:** if no API key is configured, the tool reads the installed Grok CLI's login and version and uses its first-party endpoint. Run `grok login` and sign in first. The CLI's sign-in lasts only a few hours at a time, so when it is about to expire grok-commit runs `grok models` to have the CLI renew it; you only need `grok login` again if the CLI itself can no longer renew it. This compatibility mode depends on the CLI's authentication format and endpoint, which may change. It does not copy or print your login token.
 
 To save an API key for future commands or a login service, pass it on stdin:
 

@@ -78,7 +78,7 @@ func (r Repository) snapshot(ctx context.Context, history bool) (Snapshot, error
 	if s.Diff == "" {
 		return s, errNothingStaged
 	}
-	s.Stat, err = r.git(ctx, "--no-pager", "diff", "--no-ext-diff", "--no-color", "--stat", head, s.Tree, "--")
+	s.Stat, err = r.git(ctx, "--no-pager", "diff", "--no-ext-diff", "--no-color", "--compact-summary", head, s.Tree, "--")
 	if err != nil {
 		return s, err
 	}

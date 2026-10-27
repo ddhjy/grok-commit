@@ -375,21 +375,29 @@ func ExamplePrompt() {
 	fmt.Println(strings.Contains(Prompt("+hello", "", "Use Chinese"), "Use Chinese")) // Output: true
 }
 
-func TestColorStatusAndStat(t *testing.T) {
-	status := "M  a.go\n M b.go\nMM c.go\n?? d.go"
-	if got := colorStatus(status, false); got != status {
-		t.Fatalf("plain status changed: %q", got)
-	}
-	want := "\x1b[32mM\x1b[m  a.go\n \x1b[31mM\x1b[m b.go\n\x1b[32mM\x1b[m\x1b[31mM\x1b[m c.go\n\x1b[31m??\x1b[m d.go"
-	if got := colorStatus(status, true); got != want {
-		t.Fatalf("status = %q", got)
-	}
+func TestColorStat(t *testing.T) {
 	stat := " a.go | 5 +++--\n b.png | Bin 0 -> 12 bytes\n c.go | 0\n 3 files changed, 3 insertions(+), 2 deletions(-)"
 	if got := colorStat(stat, false); got != stat {
 		t.Fatalf("plain stat changed: %q", got)
 	}
-	want = " a.go | 5 \x1b[32m+++\x1b[m\x1b[31m--\x1b[m\n b.png | Bin 0 -> 12 bytes\n c.go | 0\n 3 files changed, 3 insertions(+), 2 deletions(-)"
+	want := " a.go | 5 \x1b[32m+++\x1b[m\x1b[31m--\x1b[m\n b.png | Bin 0 -> 12 bytes\n c.go | 0\n 3 files changed, 3 insertions(+), 2 deletions(-)"
 	if got := colorStat(stat, true); got != want {
 		t.Fatalf("stat = %q", got)
+	}
+}
+
+func TestLeftOut(t *testing.T) {
+	status := " M code.txt\nMM both.txt\nM  staged.txt\n?? new.txt\n?? other.txt\n"
+	for _, c := range []struct {
+		staged, all bool
+		want        string
+	}{
+		{true, true, ""},
+		{true, false, " Not included: 2 new files (add -a to include)"},
+		{false, false, " Not included: 2 files with unstaged changes, 2 new files"},
+	} {
+		if got := leftOut(status, c.staged, c.all); got != c.want {
+			t.Errorf("leftOut(%v, %v) = %q, want %q", c.staged, c.all, got, c.want)
+		}
 	}
 }

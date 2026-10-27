@@ -26,26 +26,6 @@ func paint(color, s string) string {
 	return color + s + ansiReset
 }
 
-// colorStatus colors `git status --porcelain` like `git status --short`:
-// index changes green, worktree changes, untracked and ignored entries red.
-func colorStatus(status string, color bool) string {
-	if !color {
-		return status
-	}
-	lines := strings.Split(status, "\n")
-	for i, line := range lines {
-		if len(line) < 3 {
-			continue
-		}
-		if x := line[:2]; x == "??" || x == "!!" {
-			lines[i] = paint(ansiRed, x) + line[2:]
-			continue
-		}
-		lines[i] = paint(ansiGreen, line[:1]) + paint(ansiRed, line[1:2]) + line[2:]
-	}
-	return strings.Join(lines, "\n")
-}
-
 // colorStat colors the +/- graph of `git diff --stat` file lines.
 func colorStat(stat string, color bool) string {
 	if !color {
