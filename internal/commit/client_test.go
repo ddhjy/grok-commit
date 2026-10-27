@@ -9,6 +9,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -275,5 +277,91 @@ func TestTimeoutSuggestsLongerTimeout(t *testing.T) {
 	_, err := g.Generate(context.Background(), Request{Model: c.Model})
 	if err == nil || err.Error() != "Grok didn't answer within 100ms. Try again, or allow more time with --timeout 200ms" {
 		t.Fatal(err)
+	}
+}
+
+func writeCLISignIn(t *testing.T, home, key string, expires time.Time) {
+	t.Helper()
+	b, _ := json.Marshal(map[string]any{"https://auth.x.ai::test": map[string]string{"key": key, "expires_at": expires.UTC().Format(time.RFC3339Nano)}})
+	if err := os.WriteFile(filepath.Join(home, "auth.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fakeCLI stands in for Grok CLI renewing its sign-in to key.
+func fakeCLI(t *testing.T, home, key string) *atomic.Int32 {
+	t.Helper()
+	var runs atomic.Int32
+	original := refreshCLI
+	t.Cleanup(func() { refreshCLI = original })
+	refreshCLI = func(context.Context) error {
+		runs.Add(1)
+		if key != "" {
+			writeCLISignIn(t, home, key, time.Now().Add(6*time.Hour))
+		}
+		return nil
+	}
+	return &runs
+}
+
+func cliTestGrok(t *testing.T, accepted string) *Grok {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+accepted {
+			w.WriteHeader(401)
+			return
+		}
+		if r.URL.Path == "/models" {
+			fmt.Fprint(w, `{"data":[]}`)
+			return
+		}
+		sse(w, "feat: renewed sign-in", "stop")
+	}))
+	t.Cleanup(server.Close)
+	c := Config{Model: "grok-4.3", Reasoning: "none", Auth: "cli", BaseURL: server.URL, RequestTimeout: 2 * time.Second}
+	return &Grok{config: c, client: server.Client()}
+}
+
+func TestExpiringCLISignInIsRenewedFirst(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_HOME", home)
+	writeCLISignIn(t, home, "old", time.Now().Add(-time.Hour))
+	runs := fakeCLI(t, home, "new")
+	g := cliTestGrok(t, "new")
+	if err := g.Warm(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	r := Request{Model: "grok-4.3", Reasoning: "none", System: systemPrompt, Prompt: "diff"}
+	if s, err := g.Generate(context.Background(), r); err != nil || s != "feat: renewed sign-in" {
+		t.Fatalf("%q %v", s, err)
+	}
+	if runs.Load() != 1 {
+		t.Fatalf("Grok CLI ran %d times, want 1", runs.Load())
+	}
+}
+
+func TestRejectedCLISignInIsRenewedAndRetried(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_HOME", home)
+	writeCLISignIn(t, home, "revoked", time.Now().Add(time.Hour))
+	runs := fakeCLI(t, home, "new")
+	if err := cliTestGrok(t, "new").Warm(context.Background()); err != nil || runs.Load() != 1 {
+		t.Fatalf("%v after %d CLI runs", err, runs.Load())
+	}
+}
+
+func TestUnrenewableCLISignInAsksForLogin(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("GROK_HOME", home)
+	writeCLISignIn(t, home, "old", time.Now().Add(-time.Hour))
+	runs := fakeCLI(t, home, "")
+	g := cliTestGrok(t, "new")
+	for range 3 {
+		if err := g.Warm(context.Background()); err == nil || !strings.Contains(err.Error(), "Run grok login") {
+			t.Fatal(err)
+		}
+	}
+	if runs.Load() != 1 {
+		t.Fatalf("Grok CLI ran %d times, want 1 per minute", runs.Load())
 	}
 }

@@ -13,8 +13,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -37,6 +39,15 @@ type Grok struct {
 	config  Config
 	client  *http.Client
 	version string
+
+	renewMu   sync.Mutex
+	renewedAt time.Time
+}
+
+// refreshCLI makes Grok CLI renew its sign-in. Any command that talks to Grok
+// does; listing models is the cheapest. Tests replace it.
+var refreshCLI = func(ctx context.Context) error {
+	return exec.CommandContext(ctx, "grok", "models").Run()
 }
 
 func NewGrok(ctx context.Context, c Config) (*Grok, error) {
@@ -59,12 +70,72 @@ func NewGrok(ctx context.Context, c Config) (*Grok, error) {
 
 func (g *Grok) Close() { g.client.CloseIdleConnections() }
 
-func (g *Grok) request(ctx context.Context, method, endpoint string, body io.Reader) (*http.Response, error) {
-	key, err := g.config.credential()
+func (g *Grok) request(ctx context.Context, method, endpoint string, body []byte) (*http.Response, error) {
+	key, err := g.key(ctx)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, method, g.config.BaseURL+endpoint, body)
+	resp, err := g.send(ctx, method, endpoint, body, key)
+	var rejected authError
+	if g.config.Auth == "cli" && errors.As(err, &rejected) {
+		if fresh, ok := g.renew(ctx, key); ok {
+			return g.send(ctx, method, endpoint, body, fresh)
+		}
+	}
+	return resp, err
+}
+
+// key returns the credential, renewing a Grok CLI sign-in that is about to
+// expire. The CLI's access tokens last only a few hours, so without this
+// grok-commit stops working whenever the CLI itself hasn't run for a while.
+func (g *Grok) key(ctx context.Context) (string, error) {
+	if g.config.Auth != "cli" {
+		return g.config.credential()
+	}
+	key, expires, err := cliSignIn()
+	if err == nil && !expires.IsZero() && time.Until(expires) < 2*time.Minute {
+		if fresh, ok := g.renew(ctx, key); ok {
+			key = fresh
+		}
+	}
+	return key, err
+}
+
+// renew asks Grok CLI to refresh its sign-in and returns the new access token.
+// The CLI owns auth.json and rotates the refresh token under its own lock, so
+// grok-commit never uses the refresh token itself: two clients refreshing the
+// same rotating token would sign each other out.
+func (g *Grok) renew(ctx context.Context, stale string) (string, bool) {
+	g.renewMu.Lock()
+	defer g.renewMu.Unlock()
+	if key, _, err := cliSignIn(); err == nil && key != stale {
+		return key, true // Renewed meanwhile, by a parallel request or the CLI.
+	}
+	// A sign-in the CLI can't renew stays broken until grok login, so don't
+	// rerun the CLI on every request (the daemon warms up every 25 seconds).
+	if time.Since(g.renewedAt) < time.Minute {
+		return "", false
+	}
+	g.renewedAt = time.Now()
+	// Not cancelled with the request: stopping the CLI mid-refresh could lose
+	// the rotated refresh token.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	// The CLI exits successfully even when signed out, so check the file.
+	_ = refreshCLI(ctx)
+	key, _, err := cliSignIn()
+	if err != nil || key == stale {
+		return "", false
+	}
+	return key, true
+}
+
+func (g *Grok) send(ctx context.Context, method, endpoint string, body []byte, key string) (*http.Response, error) {
+	var reader io.Reader
+	if body != nil {
+		reader = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, g.config.BaseURL+endpoint, reader)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +168,7 @@ func (e authError) Error() string { return e.message }
 func (g *Grok) statusError(code int, endpoint string) error {
 	switch {
 	case g.config.Auth == "cli" && (code == 401 || code == 403):
-		return authError{code, "Grok didn't accept your Grok CLI sign-in; it may have expired. Run grok login, then try again."}
+		return authError{code, "Grok didn't accept your Grok CLI sign-in, and Grok CLI couldn't renew it. Run grok login, then try again."}
 	case code == 401:
 		return authError{code, "Grok didn't accept your API key (HTTP 401). Check that it's complete and still active at https://console.x.ai, then save it again with: grok-commit setup --auth api"}
 	case code == 403:
@@ -148,6 +219,11 @@ func (g *Grok) host() string {
 }
 
 func (g *Grok) Warm(ctx context.Context) error {
+	// Renewing a Grok CLI sign-in takes several seconds; do it before the
+	// quick deadline for the request itself.
+	if _, err := g.key(ctx); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	r, err := g.request(ctx, "GET", "/models", nil)
@@ -167,7 +243,7 @@ func (g *Grok) generateOnce(ctx context.Context, r Request) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	resp, err := g.request(ctx, "POST", "/chat/completions", bytes.NewReader(b))
+	resp, err := g.request(ctx, "POST", "/chat/completions", b)
 	if err != nil {
 		return "", err
 	}

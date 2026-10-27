@@ -169,37 +169,47 @@ func (c Config) credential() (string, error) {
 		}
 		return key, nil
 	}
+	key, _, err := cliSignIn()
+	return key, err
+}
+
+// cliSignIn reads Grok CLI's short-lived access token and when it expires
+// (zero if the CLI didn't record it).
+func cliSignIn() (string, time.Time, error) {
 	home := os.Getenv("GROK_HOME")
 	if home == "" {
 		h, err := os.UserHomeDir()
 		if err != nil {
-			return "", err
+			return "", time.Time{}, err
 		}
 		home = filepath.Join(h, ".grok")
 	}
 	b, err := os.ReadFile(filepath.Join(home, "auth.json"))
 	if err != nil {
-		return "", errNoCLISignIn
+		return "", time.Time{}, errNoCLISignIn
 	}
-	var entries map[string]struct {
-		Key string `json:"key"`
+	type entry struct {
+		Key       string `json:"key"`
+		ExpiresAt string `json:"expires_at"`
 	}
+	var entries map[string]entry
 	if json.Unmarshal(b, &entries) != nil {
-		return "", credentialsError("Grok CLI's sign-in file is damaged. Run grok login to sign in again, or connect with an API key: grok-commit setup --auth api")
+		return "", time.Time{}, credentialsError("Grok CLI's sign-in file is damaged. Run grok login to sign in again, or connect with an API key: grok-commit setup --auth api")
 	}
-	var keys []string
-	for name, entry := range entries {
-		if strings.HasPrefix(name, "https://auth.x.ai::") && entry.Key != "" {
-			keys = append(keys, entry.Key)
+	var found []entry
+	for name, e := range entries {
+		if strings.HasPrefix(name, "https://auth.x.ai::") && e.Key != "" {
+			found = append(found, e)
 		}
 	}
-	switch len(keys) {
+	switch len(found) {
 	case 0:
-		return "", errNoCLISignIn
+		return "", time.Time{}, errNoCLISignIn
 	case 1:
-		return keys[0], nil
+		expires, _ := time.Parse(time.RFC3339Nano, found[0].ExpiresAt)
+		return found[0].Key, expires, nil
 	}
-	return "", credentialsError("Grok CLI is signed in to more than one account, so grok-commit can't tell which one to use. Connect with an API key instead: grok-commit setup --auth api")
+	return "", time.Time{}, credentialsError("Grok CLI is signed in to more than one account, so grok-commit can't tell which one to use. Connect with an API key instead: grok-commit setup --auth api")
 }
 
 func cliVersion(ctx context.Context) (string, error) {
